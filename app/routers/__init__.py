@@ -11,6 +11,7 @@ from .auth import router as auth_router
 from .examples import router as examples_router
 from .health import router as health_router
 from .items import router as items_router
+from .orchestrator import router as orchestrator_router  # Import the orchestrator router
 
 __all__ = [
     "health_router",
