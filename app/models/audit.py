@@ -53,7 +53,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.orm import declarative_base
 
 from ..core.database import Base
@@ -155,7 +155,11 @@ class AuditLog(Base):
     response_body = Column(Text, nullable=True)  # Response body (masked, truncated)
     
     # Source indicator
-    is_middleware = Column(Boolean, nullable=False, default=False)  # True if auto-logged by middleware
+    is_middleware = Column(Boolean, nullable=False, default=False, index=True)  # True if auto-logged by middleware
+
+    __table_args__ = (
+        Index("ix_audit_logs_category_timestamp", "category", "timestamp"),
+    )
 
     def __repr__(self):
         return f"<AuditLog {self.id}: {self.action} by {self.actor_email}>"
@@ -181,4 +185,3 @@ class AuditLog(Base):
             "Response Time (ms)": round(self.response_time_ms, 2) if self.response_time_ms else "",
             "Source": "Middleware" if self.is_middleware else "Custom",
         }
-
