@@ -42,6 +42,7 @@ from .routers import (
     examples_router,
     health_router,
     items_router,
+    orchestrator_router,
 )
 from .security import get_current_user, verify_access
 
@@ -223,6 +224,7 @@ async def delete_file(
 # =============================================================================
 
 app.include_router(api_router)
+app.include_router(orchestrator_router)  # Mount the orchestrator router at /api/orchestrator
 
 
 # =============================================================================

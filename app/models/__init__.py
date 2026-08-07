@@ -7,6 +7,7 @@ from .agent_run import AgentRun
 from .operator_result import OperatorResult
 from .policy_evaluation import PolicyEvaluation
 from .workbench_item import WorkbenchItem
+from .policy import Policy
 
 __all__ = [
     "Item",
@@ -19,4 +20,5 @@ __all__ = [
     "OperatorResult",
     "PolicyEvaluation",
     "WorkbenchItem",
+    "Policy",
 ]
