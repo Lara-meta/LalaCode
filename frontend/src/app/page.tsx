@@ -1,8 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import type { ElementType } from 'react'
 import { motion } from 'framer-motion'
+import Link from 'next/link'
 
 import {
   Bar,
@@ -37,6 +38,13 @@ type Summary = {
   blocked: number
   failed: number
   active: number
+  stalled: number
+  stalled_after_minutes: number
+  waiting_for_human: number
+  review_unavailable: number
+  rejected: number
+  superseded: number
+  other: number
 }
 
 type ActivityData = {
@@ -47,6 +55,8 @@ type ActivityData = {
   blocked: number
   failed: number
   active: number
+  human_assisted: number
+  unresolved: number
 }
 
 type RecentRun = {
@@ -59,6 +69,13 @@ type RecentRun = {
   status: string
   triggered_at: string
   completed_at: string | null
+  supplier_id: string | null
+  severity: string | null
+  exposure_value: number | null
+  recommended_strategy: string | null
+  priority: 'critical' | 'high' | 'medium' | 'low'
+  age_minutes: number | null
+  workbench_item_id: number | null
 }
 
 type OperatorActivity = {
@@ -76,6 +93,14 @@ type HealthItem = {
 
 type DashboardResponse = {
   summary: Summary
+  action_required: {
+    pending_reviews: number
+    failed_runs: number
+    policy_blocks: number
+    stalled_runs: number
+    oldest_wait_minutes: number | null
+    oldest_review_id: number | null
+  }
   activity_chart: ActivityData[]
   recent_runs: RecentRun[]
   recent_operators: OperatorActivity[]
@@ -115,6 +140,14 @@ function statusClasses(status: string) {
 
   if (status === 'failed') {
     return 'bg-red-100 text-red-700'
+  }
+
+  if (status === 'stalled') {
+    return 'bg-orange-100 text-orange-800'
+  }
+
+  if (status === 'review_unavailable') {
+    return 'bg-red-100 text-red-800'
   }
 
   if (status === 'running') {
@@ -201,16 +234,17 @@ function SummaryCard({
 // ORCHESTRATION ACTIVITY CHART
 // ============================================================
 
-function OrchestrationActivityChart({
+function RecoveryOutcomesChart({
   data,
 }: {
   data: ActivityData[]
 }) {
-  const totalLastSevenDays =
-    data.reduce(
-      (sum, item) => sum + item.total,
-      0
-    )
+  const totals = data.reduce((summary, item) => ({
+    received: summary.received + item.total,
+    completed: summary.completed + item.completed,
+    assisted: summary.assisted + item.human_assisted,
+    unresolved: summary.unresolved + item.unresolved,
+  }), { received: 0, completed: 0, assisted: 0, unresolved: 0 })
 
   return (
     <Card className='relative overflow-hidden'>
@@ -228,22 +262,21 @@ function OrchestrationActivityChart({
                 strokeWidth={1.5}
               />
 
-              Orchestration Activity
+              Recovery Outcomes
             </CardTitle>
 
             <p className='mt-1 text-sm text-muted-foreground'>
-              Workflow outcomes over the last 7 days.
+              Recovery volume and outcomes over the last 7 days.
             </p>
           </div>
 
-          <div className='text-left sm:text-right'>
-            <p className='text-xs uppercase tracking-wide text-brand-muted'>
-              7-Day Runs
-            </p>
-
-            <p className='text-xl font-bold text-brand-navy'>
-              {totalLastSevenDays}
-            </p>
+          <div className='grid grid-cols-2 gap-x-5 gap-y-2 text-left sm:grid-cols-4 sm:text-right'>
+            {[
+              ['Received', totals.received],
+              ['Auto-resolved', totals.completed],
+              ['Human-assisted', totals.assisted],
+              ['Unresolved', totals.unresolved],
+            ].map(([label, value]) => <div key={label}><p className='text-[10px] uppercase tracking-wide text-brand-muted'>{label}</p><p className='text-lg font-bold text-brand-navy'>{value}</p></div>)}
           </div>
         </div>
       </CardHeader>
@@ -298,23 +331,30 @@ function OrchestrationActivityChart({
               <Legend />
 
               <Bar
+                dataKey='total'
+                name='Received'
+                fill='#CBD5E1'
+                radius={[6, 6, 0, 0]}
+              />
+
+              <Bar
                 dataKey='completed'
-                name='Completed'
+                name='Auto-resolved'
                 fill='#5B8DEF'
                 radius={[6, 6, 0, 0]}
               />
 
               <Bar
-                dataKey='blocked'
-                name='Blocked'
+                dataKey='human_assisted'
+                name='Human-assisted'
                 fill='#7C5CE7'
                 radius={[6, 6, 0, 0]}
               />
 
               <Bar
-                dataKey='failed'
-                name='Failed'
-                fill='#141A42'
+                dataKey='unresolved'
+                name='Unresolved'
+                fill='#EF4444'
                 radius={[6, 6, 0, 0]}
               />
             </BarChart>
@@ -339,6 +379,9 @@ export default function HomePage() {
 
   const [error, setError] =
     useState('')
+  const [runSearch, setRunSearch] = useState('')
+  const [runStatus, setRunStatus] = useState('attention')
+  const [expandedRunId, setExpandedRunId] = useState<number | null>(null)
 
 
   // ============================================================
@@ -353,7 +396,7 @@ export default function HomePage() {
 
         const data =
           await apiClient.get<DashboardResponse>(
-            '/api/dashboard/operations?limit=10'
+            '/api/dashboard/operations?limit=50'
           )
 
         setDashboard(data)
@@ -374,6 +417,16 @@ export default function HomePage() {
   useEffect(() => {
     loadDashboard()
   }, [loadDashboard])
+
+  const filteredRuns = useMemo(() => {
+    if (!dashboard) return []
+    const attention = ['waiting_for_human', 'review_unavailable', 'stalled', 'failed', 'blocked_by_policy']
+    return dashboard.recent_runs.filter((run) => {
+      const matchesStatus = runStatus === 'all' || (runStatus === 'attention' ? attention.includes(run.status) : run.status === runStatus)
+      const haystack = `${run.item_number} ${run.notice_id} ${run.notice_type} ${run.supplier_id}`.toLowerCase()
+      return matchesStatus && haystack.includes(runSearch.trim().toLowerCase())
+    })
+  }, [dashboard, runSearch, runStatus])
 
 
   // ============================================================
@@ -465,32 +518,58 @@ export default function HomePage() {
         </div>
       </div>
 
+      <ActionRequired data={dashboard.action_required} />
 
       {/* ====================================================== */}
       {/* SUMMARY CARDS */}
       {/* ====================================================== */}
 
+      <div className='flex flex-wrap items-center justify-between gap-3'>
+        <div><h2 className='text-xl font-semibold text-brand-navy'>Current workflow status</h2><p className='mt-1 text-sm text-muted-foreground'>Every orchestration attempt is classified by its latest state.</p></div>
+        <div className='rounded-full border bg-white px-4 py-2 text-sm text-brand-muted'><span className='font-bold text-brand-navy'>{dashboard.summary.total_runs}</span> total attempts</div>
+      </div>
+
       <div className='grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4'>
-
         <SummaryCard
-          title='Total Runs'
-          value={dashboard.summary.total_runs}
-          icon={Icons.activity}
-          description='All orchestration attempts'
-        />
-
-         <SummaryCard
-          title='Active'
+          title='Running'
           value={dashboard.summary.active}
           icon={Icons.loader}
-          description='Currently in progress'
+          description='Actively executing now'
         />
+
+        <SummaryCard
+          title='Awaiting Decision'
+          value={dashboard.summary.waiting_for_human}
+          icon={Icons.clock}
+          description='Paused for human selection'
+        />
+
+        <SummaryCard
+          title='Stalled'
+          value={dashboard.summary.stalled}
+          icon={Icons.alertTriangle}
+          description={`No progress for ${dashboard.summary.stalled_after_minutes}+ minutes`}
+        />
+
+        {dashboard.summary.review_unavailable > 0 && <SummaryCard
+          title='Review Unavailable'
+          value={dashboard.summary.review_unavailable}
+          icon={Icons.alertTriangle}
+          description='Legacy waiting runs without an open review'
+        />}
 
         <SummaryCard
           title='Completed'
           value={dashboard.summary.completed}
           icon={Icons.checkCircle}
           description='Successfully completed workflows'
+        />
+
+        <SummaryCard
+          title='Rejected'
+          value={dashboard.summary.rejected}
+          icon={Icons.close}
+          description='Stopped by human decision'
         />
 
         <SummaryCard
@@ -507,7 +586,19 @@ export default function HomePage() {
           description='Runs that ended with errors'
         />
 
+        <SummaryCard
+          title='Previous Runs'
+          value={dashboard.summary.superseded}
+          icon={Icons.activity}
+          description='Replaced after human decision'
+        />
 
+        {dashboard.summary.other > 0 && <SummaryCard
+          title='Other'
+          value={dashboard.summary.other}
+          icon={Icons.activity}
+          description='Unclassified legacy states'
+        />}
 
       </div>
 
@@ -516,7 +607,7 @@ export default function HomePage() {
       {/* BAR CHART */}
       {/* ====================================================== */}
 
-      <OrchestrationActivityChart
+      <RecoveryOutcomesChart
         data={dashboard.activity_chart}
       />
 
@@ -525,21 +616,25 @@ export default function HomePage() {
       {/* RECENT RUNS */}
       {/* ====================================================== */}
 
-      <Card>
+      <Card id='recent-runs' className='scroll-mt-24'>
         <CardHeader>
-          <CardTitle>
-            Recent Orchestration Runs
-          </CardTitle>
+          <CardTitle>Priority Disruption Queue</CardTitle>
 
           <p className='text-sm text-muted-foreground'>
-            Latest disruption recovery orchestration attempts.
+            Search, prioritize, and act on recovery workflows that need attention.
           </p>
         </CardHeader>
 
         <CardContent>
-          {dashboard.recent_runs.length === 0 ? (
+          <div className='mb-4 flex flex-col gap-3 sm:flex-row'>
+            <input value={runSearch} onChange={(event) => setRunSearch(event.target.value)} placeholder='Search item, notice, supplier, or disruption...' className='h-10 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-brand-cornflower' />
+            <select value={runStatus} onChange={(event) => setRunStatus(event.target.value)} className='h-10 rounded-md border border-input bg-background px-3 text-sm'>
+              <option value='attention'>Needs attention</option><option value='all'>All statuses</option><option value='waiting_for_human'>Awaiting decision</option><option value='review_unavailable'>Review unavailable</option><option value='stalled'>Stalled</option><option value='failed'>Failed</option><option value='blocked_by_policy'>Policy blocked</option><option value='completed'>Completed</option>
+            </select>
+          </div>
+          {filteredRuns.length === 0 ? (
             <p className='py-8 text-center text-sm text-muted-foreground'>
-              No orchestration runs found.
+              No workflows match these filters.
             </p>
           ) : (
             <div className='overflow-x-auto'>
@@ -548,7 +643,7 @@ export default function HomePage() {
                 <thead>
                   <tr className='border-b'>
                     <th className='px-4 py-3 font-semibold'>
-                      Run
+                      Priority
                     </th>
 
                     <th className='px-4 py-3 font-semibold'>
@@ -556,11 +651,7 @@ export default function HomePage() {
                     </th>
 
                     <th className='px-4 py-3 font-semibold'>
-                      Notice
-                    </th>
-
-                    <th className='px-4 py-3 font-semibold'>
-                      Notice Type
+                      Disruption
                     </th>
 
                     <th className='px-4 py-3 font-semibold'>
@@ -568,38 +659,31 @@ export default function HomePage() {
                     </th>
 
                     <th className='px-4 py-3 font-semibold'>
-                      Supervity Run
+                      Age
                     </th>
 
                     <th className='px-4 py-3 font-semibold'>
-                      Triggered
+                      Action
                     </th>
                   </tr>
                 </thead>
 
 
                 <tbody>
-                  {dashboard.recent_runs.map(
+                  {filteredRuns.map(
                     (run) => (
-                      <tr
-                        key={run.id}
-                        className='border-b last:border-0'
-                      >
+                      <Fragment key={run.id}><tr className='border-b last:border-0'>
 
-                        <td className='px-4 py-4 font-mono font-semibold'>
-                          {run.id}
+                        <td className='px-4 py-4'>
+                          <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase ${priorityClasses(run.priority)}`}>{run.priority}</span>
                         </td>
 
                         <td className='px-4 py-4 font-medium'>
-                          {run.item_number || '—'}
+                          <p>{run.item_number || '—'}</p><p className='mt-1 text-xs text-muted-foreground'>Notice {run.notice_id || '—'} · Supplier {run.supplier_id || '—'}</p>
                         </td>
 
                         <td className='px-4 py-4'>
-                          {run.notice_id || '—'}
-                        </td>
-
-                        <td className='px-4 py-4 text-muted-foreground'>
-                          {run.notice_type || '—'}
+                          {titleCase(run.notice_type)}
                         </td>
 
                         <td className='px-4 py-4'>
@@ -613,27 +697,15 @@ export default function HomePage() {
                         </td>
 
                         <td className='px-4 py-4'>
-                          {run.supervity_run_id ? (
-                            <span
-                              className='block max-w-[230px] truncate font-mono text-xs'
-                              title={run.supervity_run_id}
-                            >
-                              {run.supervity_run_id}
-                            </span>
-                          ) : (
-                            <span className='text-muted-foreground'>
-                              —
-                            </span>
-                          )}
+                          <span className='font-medium'>{formatAge(run.age_minutes)}</span>
                         </td>
 
-                        <td className='px-4 py-4 text-muted-foreground'>
-                          {new Date(
-                            run.triggered_at
-                          ).toLocaleString()}
+                        <td className='px-4 py-4'>
+                          {run.status === 'waiting_for_human' && run.workbench_item_id ? <Button asChild size='sm'><Link href={`/workbench?review=${run.workbench_item_id}`}>Review</Link></Button> : run.status === 'blocked_by_policy' ? <Button asChild size='sm' variant='outline'><Link href='/ai/policies'>Policies</Link></Button> : <Button size='sm' variant='outline' onClick={() => setExpandedRunId(expandedRunId === run.id ? null : run.id)}>Details</Button>}
                         </td>
-
                       </tr>
+                      {expandedRunId === run.id && <tr className='border-b bg-slate-50/70'><td colSpan={7} className='px-4 py-4'><div className='grid gap-3 text-sm sm:grid-cols-3'><div><p className='text-xs font-semibold uppercase text-brand-muted'>Run</p><p className='mt-1'>#{run.id}</p></div><div><p className='text-xs font-semibold uppercase text-brand-muted'>Triggered</p><p className='mt-1'>{new Date(run.triggered_at).toLocaleString()}</p></div>{run.recommended_strategy && <div><p className='text-xs font-semibold uppercase text-brand-muted'>Recommended strategy</p><p className='mt-1'>{run.recommended_strategy}</p></div>}{run.status === 'review_unavailable' && <div className='sm:col-span-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-900'>This legacy run is marked as waiting, but it has no open Workbench review. No Review button is shown because there is nothing actionable.</div>}{run.supervity_run_id && <div className='sm:col-span-3'><p className='text-xs font-semibold uppercase text-brand-muted'>Supervity run</p><p className='mt-1 break-all font-mono text-xs'>{run.supervity_run_id}</p></div>}</div></td></tr>}
+                      </Fragment>
                     )
                   )}
                 </tbody>
@@ -843,5 +915,85 @@ export default function HomePage() {
       </div>
 
     </motion.div>
+  )
+}
+
+function titleCase(value: string | null) {
+  return value ? value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()) : 'Not provided'
+}
+
+function formatAge(minutes: number | null) {
+  if (minutes === null) return '—'
+  if (minutes < 60) return `${minutes}m`
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  return `${Math.floor(minutes / 1440)}d`
+}
+
+function priorityClasses(priority: RecentRun['priority']) {
+  if (priority === 'critical') return 'bg-red-600 text-white'
+  if (priority === 'high') return 'bg-orange-100 text-orange-800'
+  if (priority === 'medium') return 'bg-amber-100 text-amber-800'
+  return 'bg-slate-100 text-slate-600'
+}
+
+function ActionRequired({ data }: { data: DashboardResponse['action_required'] }) {
+  const total = data.pending_reviews + data.failed_runs + data.policy_blocks + data.stalled_runs
+  const actions = [
+    {
+      label: 'Awaiting human decision',
+      value: data.pending_reviews,
+      detail: data.oldest_wait_minutes === null ? 'No pending reviews' : `Oldest waiting ${data.oldest_wait_minutes} min`,
+      href: '/workbench',
+      action: 'Review now',
+      icon: Icons.clock,
+      tone: 'border-purple-200 bg-purple-50 text-purple-900',
+    },
+    {
+      label: 'Stalled workflows',
+      value: data.stalled_runs,
+      detail: 'Running without recent progress',
+      href: '#recent-runs',
+      action: 'Inspect stalled runs',
+      icon: Icons.alertTriangle,
+      tone: 'border-orange-200 bg-orange-50 text-orange-900',
+    },
+    {
+      label: 'Failed workflows',
+      value: data.failed_runs,
+      detail: 'Runs requiring investigation',
+      href: '#recent-runs',
+      action: 'Investigate',
+      icon: Icons.alertTriangle,
+      tone: 'border-red-200 bg-red-50 text-red-900',
+    },
+    {
+      label: 'Blocked by policy',
+      value: data.policy_blocks,
+      detail: 'Review policy configuration',
+      href: '/ai/policies',
+      action: 'View policies',
+      icon: Icons.shield,
+      tone: 'border-amber-200 bg-amber-50 text-amber-900',
+    },
+  ]
+
+  return (
+    <Card className='overflow-hidden border-slate-200'>
+      <CardHeader className='border-b bg-slate-50/70 pb-4'>
+        <div className='flex flex-wrap items-center justify-between gap-3'>
+          <div><CardTitle className='flex items-center gap-2'><Icons.alertTriangle className='h-5 w-5 text-amber-600' />Action required</CardTitle><p className='mt-1 text-sm text-muted-foreground'>Exceptions that need an operator or administrator response.</p></div>
+          <span className='rounded-full bg-brand-navy px-3 py-1 text-xs font-bold text-white'>{total} open</span>
+        </div>
+      </CardHeader>
+      <CardContent className='grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-4'>
+        {actions.map(({ label, value, detail, href, action, icon: Icon, tone }) => (
+          <Link key={label} href={href} className={`group rounded-xl border p-4 transition hover:-translate-y-0.5 hover:shadow-md ${tone}`}>
+            <div className='flex items-start justify-between gap-3'><div><p className='text-sm font-semibold'>{label}</p><p className='mt-2 text-3xl font-bold'>{value}</p></div><Icon className='h-5 w-5 opacity-70' /></div>
+            <p className='mt-2 text-xs opacity-75'>{detail}</p>
+            <p className='mt-4 text-sm font-semibold group-hover:underline'>{action} →</p>
+          </Link>
+        ))}
+      </CardContent>
+    </Card>
   )
 }

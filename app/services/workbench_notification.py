@@ -26,6 +26,11 @@ WORKBENCH_REVIEW_EMAIL = os.getenv(
     "WORKBENCH_REVIEW_EMAIL"
 )
 
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL",
+    "http://localhost:3001",
+).rstrip("/")
+
 
 class WorkbenchNotificationError(Exception):
     pass
@@ -38,7 +43,6 @@ def send_human_review_notification(
     notice_type: str,
     notice_id: str,
     reason: str,
-    review_url: str,
 ) -> None:
     required = {
         "SMTP_HOST": SMTP_HOST,
@@ -90,11 +94,12 @@ Notice ID:
 Reason:
 {reason}
 
-Open the Human Review form:
+Open the AutoPilot Approval Workbench:
 
-{review_url}
+{FRONTEND_URL}/workbench
 
-Please review the case and submit your decision.
+Approve, modify, or reject the case in AutoPilot. The Workbench
+decision is the authoritative decision for this workflow.
 """
     )
 

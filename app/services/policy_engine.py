@@ -1,52 +1,147 @@
+from datetime import datetime, timezone
+from time import perf_counter
+from typing import Any
+
 from sqlalchemy.orm import Session
+
 from ..models.policy import Policy
 from ..models.policy_evaluation import PolicyEvaluation
 
 
-def evaluate_policies(db: Session, agent_run_id: int, disruption_data: dict) -> tuple[bool, list[dict]]:
-    """
-    Runs all enabled policies against disruption_data.
-    Returns (all_passed, results). Logs every evaluation to policy_evaluations.
-    """
-    policies = db.query(Policy).filter(Policy.enabled == True).all()
-    results = []
-    all_passed = True
+DEFAULT_FIELDS = {
+    "severity_threshold": "severity",
+    "expedite_spend_limit": "expedite_cost",
+    "contract_clause_block": "x_escalation_clause",
+}
 
-    for policy in policies:
-        passed, reason = _evaluate_one(policy, disruption_data)
-        if not passed:
-            all_passed = False
 
-        evaluation = PolicyEvaluation(
-            agent_run_id=agent_run_id,
-            policy_name=policy.name,
-            passed=passed,
-            reason=reason,
+def policy_snapshot(policy: Policy) -> dict:
+    return {
+        key: getattr(policy, key, None)
+        for key in (
+            "name", "policy_type", "description", "threshold_value", "enabled",
+            "status", "version", "field_name", "operator", "unit", "action",
+            "scope", "fail_mode", "priority", "effective_from", "effective_until",
         )
-        db.add(evaluation)
-        results.append({"policy": policy.name, "passed": passed, "reason": reason})
+    }
 
+
+def _display(value: Any, unit: str | None) -> str:
+    if value is None:
+        return "missing"
+    if unit == "USD" and isinstance(value, (int, float)):
+        return f"${value:,.2f}"
+    if unit == "score_10":
+        return f"{value}/10"
+    return str(value)
+
+
+def _scope_matches(policy: Policy, data: dict) -> bool:
+    scope = policy.scope if isinstance(policy.scope, dict) else {}
+    for key, expected in scope.items():
+        if expected in (None, "", []):
+            continue
+        actual = data.get(key)
+        if isinstance(expected, list):
+            if actual not in expected:
+                return False
+        elif str(actual) != str(expected):
+            return False
+    return True
+
+
+def evaluate_policy(policy: Policy, data: dict, include_lifecycle: bool = True) -> dict:
+    started = perf_counter()
+    now = datetime.now(timezone.utc)
+    status = policy.status or ("active" if policy.enabled else "draft")
+    if include_lifecycle:
+        effective_from = policy.effective_from
+        effective_until = policy.effective_until
+        if effective_from and effective_from.tzinfo is None:
+            effective_from = effective_from.replace(tzinfo=timezone.utc)
+        if effective_until and effective_until.tzinfo is None:
+            effective_until = effective_until.replace(tzinfo=timezone.utc)
+        if not policy.enabled or status not in {"active", "scheduled"}:
+            return _result(policy, "skipped", None, "Policy is not active", "No effect", started)
+        if status == "scheduled" and not effective_from:
+            return _result(policy, "skipped", None, "Scheduled policy has no activation date", "No effect", started)
+        if effective_from and effective_from > now:
+            return _result(policy, "skipped", None, "Policy is scheduled for later", "No effect", started)
+        if effective_until and effective_until < now:
+            return _result(policy, "skipped", None, "Policy has expired", "No effect", started)
+    if not _scope_matches(policy, data):
+        return _result(policy, "not_applicable", None, "Run is outside policy scope", "No effect", started)
+
+    field = policy.field_name or DEFAULT_FIELDS.get(policy.policy_type)
+    value = data.get(field) if field else None
+    operator = policy.operator or ("not_empty" if policy.policy_type == "contract_clause_block" else "gt")
+    threshold = policy.threshold_value
+    if value is None:
+        outcome = "error"
+        effect = "Blocked (fail closed)" if (policy.fail_mode or "closed") == "closed" else "Allowed (fail open)"
+        return _result(policy, outcome, value, f"Required field '{field}' is missing", effect, started)
+
+    try:
+        if operator == "gt":
+            matched = float(value) > float(threshold)
+            symbol = ">"
+        elif operator == "gte":
+            matched = float(value) >= float(threshold)
+            symbol = ">="
+        elif operator == "lt":
+            matched = float(value) < float(threshold)
+            symbol = "<"
+        elif operator == "lte":
+            matched = float(value) <= float(threshold)
+            symbol = "<="
+        elif operator == "eq":
+            matched = str(value) == str(threshold)
+            symbol = "="
+        elif operator == "contains":
+            matched = str(threshold).lower() in str(value).lower()
+            symbol = "contains"
+        elif operator == "not_empty":
+            matched = bool(str(value).strip())
+            symbol = "is not empty"
+        else:
+            return _result(policy, "error", value, f"Unsupported operator '{operator}'", "Blocked (fail closed)", started)
+    except (TypeError, ValueError):
+        return _result(policy, "error", value, "Input and threshold could not be compared", "Blocked (fail closed)", started)
+
+    lhs = _display(value, policy.unit)
+    rhs = _display(threshold, policy.unit) if operator != "not_empty" else ""
+    calculation = f"{lhs} {symbol} {rhs}".strip()
+    if matched and (policy.action or "block") == "block":
+        return _result(policy, "block", value, f"Rule matched: {calculation}", "Orchestration blocked", started, calculation)
+    return _result(policy, "pass", value, f"Rule did not block: {calculation}", "Orchestration allowed", started, calculation)
+
+
+def _result(policy: Policy, outcome: str, value: Any, reason: str, effect: str,
+            started: float, calculation: str | None = None) -> dict:
+    passed = outcome in {"pass", "not_applicable", "skipped"} or (
+        outcome == "error" and (policy.fail_mode or "closed") == "open"
+    )
+    return {
+        "policy_id": policy.id, "policy": policy.name, "policy_version": policy.version or 1,
+        "passed": passed, "outcome": outcome, "reason": reason,
+        "input_field": policy.field_name or DEFAULT_FIELDS.get(policy.policy_type),
+        "input_value": None if value is None else str(value), "operator": policy.operator,
+        "threshold_value": policy.threshold_value, "calculation": calculation,
+        "final_effect": effect, "duration_ms": max(0, round((perf_counter() - started) * 1000)),
+    }
+
+
+def evaluate_policies(db: Session, agent_run_id: int, disruption_data: dict) -> tuple[bool, list[dict]]:
+    policies = db.query(Policy).filter(Policy.status != "archived").order_by(Policy.priority, Policy.id).all()
+    results = [evaluate_policy(policy, disruption_data) for policy in policies]
+    for policy, result in zip(policies, results):
+        db.add(PolicyEvaluation(
+            agent_run_id=agent_run_id, policy_id=policy.id, policy_name=policy.name,
+            policy_version=result["policy_version"], passed=result["passed"], outcome=result["outcome"],
+            reason=result["reason"], input_field=result["input_field"], input_value=result["input_value"],
+            operator=result["operator"], threshold_value=result["threshold_value"],
+            calculation=result["calculation"], final_effect=result["final_effect"],
+            duration_ms=result["duration_ms"], details={"scope": policy.scope or {}, "unit": policy.unit},
+        ))
     db.commit()
-    return all_passed, results
-
-
-def _evaluate_one(policy: Policy, data: dict) -> tuple[bool, str]:
-    if policy.policy_type == "severity_threshold":
-        severity = data.get("severity") or 0
-        if severity > policy.threshold_value:
-            return False, f"Severity {severity} exceeds threshold {policy.threshold_value}"
-        return True, "Within severity threshold"
-
-    if policy.policy_type == "expedite_spend_limit":
-        cost = data.get("expedite_cost") or 0
-        if cost > policy.threshold_value:
-            return False, f"Expedite cost {cost} exceeds limit {policy.threshold_value}"
-        return True, "Within spend limit"
-
-    if policy.policy_type == "contract_clause_block":
-        clause_text = data.get("x_escalation_clause") or ""
-        if clause_text and clause_text.strip():
-            return False, f"Contract has escalation clause: {clause_text[:100]}"
-        return True, "No escalation clause found"
-
-    return True, "Unknown policy type — skipped"
+    return all(result["passed"] for result in results), results

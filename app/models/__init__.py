@@ -8,6 +8,9 @@ from .operator_result import OperatorResult
 from .policy_evaluation import PolicyEvaluation
 from .workbench_item import WorkbenchItem
 from .policy import Policy
+from .ai_chat_message import AIChatMessage
+from .notification import Notification
+from .policy_version import PolicyVersion, PolicyAudit
 
 __all__ = [
     "Item",
@@ -21,4 +24,8 @@ __all__ = [
     "PolicyEvaluation",
     "WorkbenchItem",
     "Policy",
+    "AIChatMessage",
+    "Notification",
+    "PolicyVersion",
+    "PolicyAudit",
 ]

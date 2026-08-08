@@ -17,6 +17,7 @@ from ..models.agent_run import AgentRun
 from ..models.disruption import Disruption
 from ..models.operator_result import OperatorResult
 from ..models.workbench_item import WorkbenchItem
+from ..models.notification import Notification
 from ..services.policy_engine import evaluate_policies
 from ..services.supervity import (
     SupervityError,
@@ -255,7 +256,7 @@ async def run_orchestrator(
 
 
     # ========================================================
-    # 4. POLICY BLOCK -> WORKBENCH
+    # 4. POLICY BLOCK -> STOP
     # ========================================================
 
     if not passed:
@@ -271,65 +272,6 @@ async def run_orchestrator(
             for result in policy_results
             if not result["passed"]
         )
-
-        # ----------------------------------------------------
-        # Reuse an existing pending Workbench item for the
-        # same disruption when possible.
-        # ----------------------------------------------------
-
-        existing_item = (
-            db.query(WorkbenchItem)
-            .join(
-                AgentRun,
-                WorkbenchItem.agent_run_id
-                == AgentRun.id,
-            )
-            .filter(
-                AgentRun.disruption_id
-                == disruption.id
-            )
-            .filter(
-                WorkbenchItem.status
-                == "pending"
-            )
-            .order_by(
-                WorkbenchItem.id.asc()
-            )
-            .first()
-        )
-
-        if existing_item:
-            existing_item.agent_run_id = (
-                agent_run.id
-            )
-
-            existing_item.reason = (
-                "Policy block: "
-                f"{blocked_reasons}"
-            )
-
-            db.commit()
-            db.refresh(existing_item)
-
-            workbench_item = (
-                existing_item
-            )
-
-        else:
-            workbench_item = WorkbenchItem(
-                agent_run_id=agent_run.id,
-
-                reason=(
-                    "Policy block: "
-                    f"{blocked_reasons}"
-                ),
-
-                status="pending",
-            )
-
-            db.add(workbench_item)
-            db.commit()
-            db.refresh(workbench_item)
 
         return {
             "agent_run_id":
@@ -347,8 +289,8 @@ async def run_orchestrator(
             "policy_results":
                 policy_results,
 
-            "workbench_item_id":
-                workbench_item.id,
+            "blocked_reasons":
+                blocked_reasons,
         }
 
 
@@ -365,6 +307,11 @@ async def run_orchestrator(
     # Prevent the same Human Review from sending duplicate
     # notification emails.
     review_notification_sent = False
+
+    # Completed upstream activities are retained until the
+    # human-decision checkpoint so the Workbench can present
+    # the complete evidence and recommendation snapshot.
+    review_activities: list[dict] = []
 
 
     # ========================================================
@@ -401,6 +348,22 @@ async def run_orchestrator(
         activity_kind = content.get(
             "kind"
         )
+
+        if (
+            event_type == "activity-run"
+            and activity_kind == "step"
+            and step_status == "completed"
+            and step_id != "step_human_review_serious"
+        ):
+            review_activities.append({
+                "step_id": step_id,
+                "step_name": content.get("stepName"),
+                "description": content.get("stepDescription"),
+                "outputs": content.get("outputs") or {},
+                "output_object_keys": (
+                    content.get("outputObjectKeys") or []
+                ),
+            })
 
 
         # ====================================================
@@ -495,10 +458,11 @@ async def run_orchestrator(
             # Workbench can surface the same human stop.
             run_result = dict(agent_run.result or {})
             run_result["human_review"] = {
-                "source": "supervity",
-                "review_url": review_url,
+                "source": "autopilot_workbench",
                 "step_id": step_id,
                 "status": "waiting",
+                "form_data": content,
+                "recommendation_activities": review_activities,
             }
             agent_run.result = run_result
 
@@ -535,10 +499,7 @@ async def run_orchestrator(
             # Send Admin notification ONCE
             # ----------------------------------------------
 
-            if (
-                review_url
-                and not review_notification_sent
-            ):
+            if not review_notification_sent:
                 try:
                     await asyncio.to_thread(
                         send_human_review_notification,
@@ -561,13 +522,20 @@ async def run_orchestrator(
                             "human approval."
                         ),
 
-                        review_url=
-                            review_url,
                     )
 
                     review_notification_sent = (
                         True
                     )
+
+                    db.add(Notification(
+                        title="Human approval required",
+                        message=f"Run #{agent_run.id} for {request.item_number} is waiting for your review.",
+                        notification_type="warning",
+                        link="/workbench",
+                        agent_run_id=agent_run.id,
+                    ))
+                    db.commit()
 
                     logger.info(
                         "Human review email sent "
@@ -592,40 +560,13 @@ async def run_orchestrator(
 
         if step_status == "completed":
 
-            # Admin submitted the Human Review.
-            #
-            # Supervity now continues the SAME workflow.
-
-            if agent_run.status != "running":
-                agent_run.status = "running"
-
-                workbench_item = (
-                    db.query(WorkbenchItem)
-                    .filter(
-                        WorkbenchItem.agent_run_id
-                        == agent_run.id,
-                        WorkbenchItem.status == "pending",
-                    )
-                    .first()
-                )
-
-                if workbench_item:
-                    workbench_item.status = "resumed"
-                    workbench_item.decision_notes = (
-                        "Human review completed in Supervity; "
-                        "workflow resumed automatically."
-                    )
-                    workbench_item.resolved_at = (
-                        datetime.now(timezone.utc)
-                    )
-
-                db.commit()
-                db.refresh(agent_run)
-
-            logger.info(
-                "Human review completed "
-                "for Agent Run %s. "
-                "Supervity workflow continuing.",
+            # Legacy Supervity forms are not authoritative.
+            # Only a decision submitted through the AutoPilot
+            # Workbench may update or continue this local run.
+            logger.warning(
+                "Ignoring legacy Supervity human-review "
+                "completion for Agent Run %s; a Workbench "
+                "decision is required.",
                 agent_run.id,
             )
 

@@ -31,6 +31,9 @@ COPY alembic.ini ./
 COPY scripts ./scripts/
 COPY start_gunicorn.sh ./
 
+# Normalize Windows checkouts so the Linux entrypoint remains executable.
+RUN sed -i 's/\r$//' start_gunicorn.sh
+
 RUN chmod -R 755 /app/*/
 # Make scripts executable
 RUN chmod +x start_gunicorn.sh utils/wait_for_db.py 2>/dev/null || true

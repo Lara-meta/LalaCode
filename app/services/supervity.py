@@ -237,6 +237,101 @@ SupervityEventCallback = Callable[
 ]
 
 
+async def trigger_operator_run(
+    workflow_id: str,
+    inputs: dict[str, str],
+) -> dict[str, Any]:
+    """Execute a specific Supervity operator workflow."""
+
+    multipart_data = {
+        "workflowId": (None, workflow_id),
+        **{
+            f"inputs[{key}]": (None, str(value))
+            for key, value in inputs.items()
+            if value is not None
+        },
+    }
+    endpoint = (
+        f"{SUPERVITY_BASE_URL}"
+        "/workflow-runs/execute/stream"
+    )
+    timeout = httpx.Timeout(
+        connect=30.0,
+        read=300.0,
+        write=30.0,
+        pool=30.0,
+    )
+    current_event: Optional[str] = None
+    workflow_run_id: Optional[str] = None
+    events: list[dict[str, Any]] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                endpoint,
+                headers=_headers(stream=True),
+                files=multipart_data,
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise SupervityError(
+                        "Supervity returned "
+                        f"{response.status_code}: "
+                        f"{body.decode(errors='replace')}"
+                    )
+
+                async for line in response.aiter_lines():
+                    line = (line or "").strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("event:"):
+                        current_event = line[len("event:"):].strip()
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+
+                    payload = _parse_sse_payload(
+                        line[len("data:"):].strip()
+                    )
+                    workflow_run_id = (
+                        _extract_run_id(payload)
+                        or workflow_run_id
+                    )
+                    events.append({
+                        "event": current_event,
+                        "data": payload,
+                    })
+
+                    if current_event == "error":
+                        raise SupervityError(
+                            "Operator execution failed: "
+                            f"{payload}"
+                        )
+                    if current_event == "result":
+                        return {
+                            "workflow_run_id": (
+                                _extract_run_id(payload)
+                                or workflow_run_id
+                            ),
+                            "status": "completed",
+                            "result": payload,
+                            "events": events,
+                        }
+    except httpx.TimeoutException as exc:
+        raise SupervityError(
+            "Timed out waiting for the operator to complete."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise SupervityError(
+            f"Could not connect to Supervity: {exc}"
+        ) from exc
+
+    raise SupervityError(
+        "Supervity ended without an operator result."
+    )
+
+
 # ============================================================
 # TRIGGER ORCHESTRATOR
 # ============================================================

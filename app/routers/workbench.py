@@ -46,9 +46,11 @@ class WorkbenchDecisionRequest(BaseModel):
         "approve",
         "modify",
         "reject",
+        "hold",
     ]
 
     decision_notes: Optional[str] = None
+    recovery_strategy: Optional[str] = None
 
     # Used only for MODIFY
     item_number: Optional[str] = None
@@ -91,6 +93,12 @@ def _serialize_item(
         "supervity_run_id": agent_run.supervity_run_id,
         "review_source": human_review.get("source"),
         "review_url": human_review.get("review_url"),
+        "review_context": {
+            "form_data": human_review.get("form_data") or {},
+            "recommendation_activities": (
+                human_review.get("recommendation_activities") or []
+            ),
+        },
 
         "disruption_id": disruption.id,
         "external_id": disruption.external_id,
@@ -168,6 +176,7 @@ def list_workbench_items(
             AgentRun.disruption_id
             == Disruption.id,
         )
+        .filter(WorkbenchItem.cleared_at.is_(None))
     )
 
     if status:
@@ -199,6 +208,34 @@ def list_workbench_items(
             ) in rows
         ]
     }
+
+
+@router.delete("/queue/clear")
+def clear_workbench_queue(
+    status: str | None = None,
+    db: Session = Depends(get_db),
+):
+    resolved_statuses = {"approved", "modified", "rejected", "resumed"}
+    if status in {"pending", "held"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Needs review and Held queues cannot be cleared while workflows are paused.",
+        )
+    if status and status not in resolved_statuses:
+        raise HTTPException(status_code=400, detail="Unknown Workbench category.")
+
+    statuses = {status} if status else resolved_statuses
+    cleared_at = datetime.now(timezone.utc)
+    updated = (
+        db.query(WorkbenchItem)
+        .filter(
+            WorkbenchItem.cleared_at.is_(None),
+            WorkbenchItem.status.in_(statuses),
+        )
+        .update({WorkbenchItem.cleared_at: cleared_at}, synchronize_session=False)
+    )
+    db.commit()
+    return {"cleared": updated, "status": status or "all_resolved"}
 
 
 # ============================================================
@@ -275,8 +312,8 @@ def make_workbench_decision(
             detail="Workbench item not found",
         )
 
-    # Decision can only happen once.
-    if item.status != "pending":
+    # Pending cases may be decided; held cases may later continue or reject.
+    if item.status not in {"pending", "held"}:
         raise HTTPException(
             status_code=409,
             detail=(
@@ -303,17 +340,33 @@ def make_workbench_decision(
             detail="Original agent run not found",
         )
 
-    if original_run.status not in {
-        "blocked_by_policy",
-        "waiting_for_human",
-    }:
+    if original_run.status not in {"waiting_for_human", "held_by_human"}:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Workbench review is only allowed for a "
-                "policy-blocked or human-waiting run"
+                "Workbench decisions are only allowed for "
+                "runs waiting for or held by a human"
             ),
         )
+
+    # ========================================================
+    # HOLD
+    # ========================================================
+
+    if request.decision == "hold":
+        item.status = "held"
+        item.decision_notes = request.decision_notes or "Held by human reviewer"
+        item.resolved_at = None
+        original_run.status = "held_by_human"
+        original_run.completed_at = None
+        db.commit()
+        db.refresh(item)
+        return {
+            "status": "held",
+            "workbench_item_id": item.id,
+            "original_agent_run_id": original_run.id,
+            "resume_required": False,
+        }
 
     # --------------------------------------------------------
     # Find disruption
@@ -350,6 +403,11 @@ def make_workbench_decision(
             datetime.now(timezone.utc)
         )
 
+        original_run.status = "rejected_by_human"
+        original_run.completed_at = (
+            datetime.now(timezone.utc)
+        )
+
         db.commit()
         db.refresh(item)
 
@@ -371,6 +429,7 @@ def make_workbench_decision(
             request.item_number is None
             and request.notice_supplier_id is None
             and request.notice_type is None
+            and request.recovery_strategy is None
         ):
             raise HTTPException(
                 status_code=400,
@@ -397,6 +456,11 @@ def make_workbench_decision(
         if request.notice_type is not None:
             raw_data["notice_type"] = (
                 request.notice_type
+            )
+
+        if request.recovery_strategy is not None:
+            raw_data["selected_recovery_strategy"] = (
+                request.recovery_strategy
             )
 
         # Keep notice ID stable.
@@ -438,6 +502,11 @@ def make_workbench_decision(
     # ========================================================
     # APPROVE
     # ========================================================
+
+    if request.recovery_strategy is not None:
+        raw_data = dict(disruption.raw_data or {})
+        raw_data["selected_recovery_strategy"] = request.recovery_strategy
+        disruption.raw_data = raw_data
 
     item.status = "approved"
 
@@ -525,15 +594,12 @@ async def resume_workbench_item(
             detail="Original agent run not found",
         )
 
-    if original_run.status not in {
-        "blocked_by_policy",
-        "waiting_for_human",
-    }:
+    if original_run.status not in {"waiting_for_human", "held_by_human"}:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Only policy-blocked or human-waiting "
-                "runs can be resumed"
+                "Only runs waiting for or held by a human "
+                "can be continued"
             ),
         )
 
@@ -619,6 +685,14 @@ async def resume_workbench_item(
     )
 
     db.add(resumed_run)
+
+    original_run.status = (
+        "superseded_by_human_decision"
+    )
+    original_run.completed_at = (
+        datetime.now(timezone.utc)
+    )
+
     db.commit()
     db.refresh(resumed_run)
 

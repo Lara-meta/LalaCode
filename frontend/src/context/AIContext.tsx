@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 import { usePathname } from 'next/navigation'
 
 // ============================================================================
@@ -27,6 +27,8 @@ interface AIContextValue {
   chatHistory: ChatMessage[]
   addMessage: (msg: Omit<ChatMessage, 'id' | 'timestamp'>) => void
   clearHistory: () => void
+  conversationId: string
+  startNewConversation: () => void
 
   // Typing indicator
   isTyping: boolean
@@ -62,6 +64,14 @@ export function AIProvider({ children }: { children: ReactNode }) {
   const [isManagerOpen, setIsManagerOpen] = useState(false)
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([])
   const [isTyping, setIsTyping] = useState(false)
+  const [conversationId, setConversationId] = useState('default')
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem('autopilot-ai-conversation-id')
+    const id = stored || crypto.randomUUID()
+    setConversationId(id)
+    window.localStorage.setItem('autopilot-ai-conversation-id', id)
+  }, [])
 
   const openManager = useCallback(() => setIsManagerOpen(true), [])
   const closeManager = useCallback(() => setIsManagerOpen(false), [])
@@ -85,6 +95,12 @@ export function AIProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const clearHistory = useCallback(() => setChatHistory([]), [])
+  const startNewConversation = useCallback(() => {
+    const id = crypto.randomUUID()
+    setChatHistory([])
+    setConversationId(id)
+    window.localStorage.setItem('autopilot-ai-conversation-id', id)
+  }, [])
 
   return (
     <AIContext.Provider
@@ -96,6 +112,8 @@ export function AIProvider({ children }: { children: ReactNode }) {
         chatHistory,
         addMessage,
         clearHistory,
+        conversationId,
+        startNewConversation,
         isTyping,
         setIsTyping,
         currentPageContext: pathname,

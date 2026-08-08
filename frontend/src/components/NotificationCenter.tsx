@@ -1,7 +1,9 @@
 'use client'
 
 import * as React from 'react'
+import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
+import { apiClient } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
 import { Icons } from '@/components/ui/icons'
 import {
@@ -14,41 +16,14 @@ import {
 type NotificationType = 'info' | 'success' | 'warning' | 'error'
 
 interface Notification {
-  id: string
+  id: number
   type: NotificationType
   title: string
   message: string
   timestamp: Date
   read: boolean
+  link?: string | null
 }
-
-// Mock notifications - in real app, this would come from a store/API
-const mockNotifications: Notification[] = [
-  {
-    id: '1',
-    type: 'success',
-    title: 'Diagnostics Complete',
-    message: 'All systems are running normally.',
-    timestamp: new Date(Date.now() - 5 * 60 * 1000), // 5 min ago
-    read: false,
-  },
-  {
-    id: '2',
-    type: 'info',
-    title: 'New Feature Available',
-    message: 'Check out the new workbench improvements.',
-    timestamp: new Date(Date.now() - 30 * 60 * 1000), // 30 min ago
-    read: false,
-  },
-  {
-    id: '3',
-    type: 'warning',
-    title: 'Token Expiring Soon',
-    message: 'Your access token will expire in 24 hours.',
-    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-    read: true,
-  },
-]
 
 const typeConfig: Record<
   NotificationType,
@@ -88,12 +63,12 @@ function formatRelativeTime(date: Date): string {
 
 interface NotificationItemProps {
   notification: Notification
-  onMarkAsRead: (id: string) => void
+  onOpen: (notification: Notification) => void
 }
 
 function NotificationItem({
   notification,
-  onMarkAsRead,
+  onOpen,
 }: NotificationItemProps) {
   const config = typeConfig[notification.type]
   const Icon = config.icon
@@ -108,7 +83,7 @@ function NotificationItem({
           ? 'opacity-60 hover:opacity-100'
           : 'hover:bg-brand-cornflower/5 hover:shadow-sm'
       )}
-      onClick={() => onMarkAsRead(notification.id)}
+      onClick={() => onOpen(notification)}
     >
       <div
         className={cn(
@@ -140,18 +115,43 @@ function NotificationItem({
 }
 
 export function NotificationCenter() {
-  const [notifications, setNotifications] = React.useState(mockNotifications)
+  const router = useRouter()
+  const [notifications, setNotifications] = React.useState<Notification[]>([])
+
+  const loadNotifications = React.useCallback(async () => {
+    try {
+      const data = await apiClient.get<{ notifications: Array<Omit<Notification, 'timestamp'> & { created_at: string }> }>('/api/notifications?limit=30')
+      setNotifications(data.notifications.map(item => ({
+        ...item,
+        type: item.type in typeConfig ? item.type : 'info',
+        timestamp: new Date(item.created_at),
+      })))
+    } catch (error) {
+      console.warn('Could not load notifications', error)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    loadNotifications()
+    const interval = window.setInterval(loadNotifications, 15000)
+    return () => window.clearInterval(interval)
+  }, [loadNotifications])
 
   const unreadCount = notifications.filter((n) => !n.read).length
 
-  const markAsRead = (id: string) => {
+  const openNotification = async (notification: Notification) => {
     setNotifications((prev) =>
-      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+      prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n))
     )
+    if (!notification.read) {
+      try { await apiClient.patch(`/api/notifications/${notification.id}/read`) } catch { loadNotifications() }
+    }
+    if (notification.link) router.push(notification.link)
   }
 
-  const markAllAsRead = () => {
+  const markAllAsRead = async () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
+    try { await apiClient.post('/api/notifications/read-all') } catch { loadNotifications() }
   }
 
   return (
@@ -216,7 +216,7 @@ export function NotificationCenter() {
                 <NotificationItem
                   key={notification.id}
                   notification={notification}
-                  onMarkAsRead={markAsRead}
+                  onOpen={openNotification}
                 />
               ))}
             </div>
@@ -229,8 +229,9 @@ export function NotificationCenter() {
             <Button
               variant='ghost'
               className='w-full text-brand-navy'
+              onClick={() => router.push('/workbench')}
             >
-              View all notifications
+              Open approval Workbench
             </Button>
           </div>
         )}

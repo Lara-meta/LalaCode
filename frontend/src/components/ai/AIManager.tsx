@@ -60,7 +60,8 @@ export function AIManager() {
     closeManager,
     chatHistory,
     addMessage,
-    clearHistory,
+    startNewConversation,
+    conversationId,
     isTyping,
     setIsTyping,
     currentPageContext,
@@ -127,6 +128,8 @@ export function AIManager() {
           content: m.content,
         })),
         context: { page: currentPageContext },
+        actor_email: session?.user?.email || undefined,
+        conversation_id: conversationId,
       })
 
       // Remove loading message and add real response
@@ -135,15 +138,17 @@ export function AIManager() {
         content: data.response || 'I apologize, but I encountered an issue processing your request.',
         toolCalls: data.tool_calls,
       })
-    } catch {
+    } catch (error) {
       addMessage({
         role: 'assistant',
-        content: 'I apologize, but I encountered an error. Please try again.',
+        content: error instanceof Error
+          ? error.message
+          : 'I apologize, but I encountered an error. Please try again.',
       })
     } finally {
       setIsTyping(false)
     }
-  }, [addMessage, chatHistory, currentPageContext, setIsTyping])
+  }, [addMessage, chatHistory, conversationId, currentPageContext, session?.user?.email, setIsTyping])
 
   // Handle quick action click
   const handleQuickAction = (action: string) => {
@@ -258,12 +263,12 @@ export function AIManager() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={clearHistory}
+                        onClick={startNewConversation}
                         className="text-muted-foreground hover:text-foreground gap-1.5"
-                        title="Clear conversation"
+                        title="Start a new conversation"
                       >
                         <Icons.trash className="h-4 w-4" strokeWidth={1.5} />
-                        <span className="hidden sm:inline">Clear</span>
+                        <span className="hidden sm:inline">New chat</span>
                       </Button>
                     )}
                     

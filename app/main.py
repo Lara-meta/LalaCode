@@ -47,6 +47,8 @@ from .routers import (
     dashboard_router,
     workbench_router,
     insights_router,
+    ai_manager_router,
+    notifications_router,
 )
 from .security import get_current_user, verify_access
 
@@ -171,6 +173,12 @@ api_router.include_router(workbench_router)
 
 # Orchestrator-derived AI insights
 api_router.include_router(insights_router)
+
+# Database-grounded AI Manager
+api_router.include_router(ai_manager_router)
+
+# In-app human approval reminders
+api_router.include_router(notifications_router)
 
 # =============================================================================
 # FILE STORAGE ENDPOINTS (kept inline for path matching order)

@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
@@ -9,6 +10,7 @@ from ..core.database import get_db
 from ..models.agent_run import AgentRun
 from ..models.disruption import Disruption
 from ..models.operator_result import OperatorResult
+from ..models.workbench_item import WorkbenchItem
 
 
 router = APIRouter(
@@ -17,12 +19,43 @@ router = APIRouter(
 )
 
 
+def _recovery_context(result):
+    """Extract decision-level impact without exposing raw workflow noise."""
+    if not isinstance(result, dict):
+        return {}
+    review = result.get("human_review") or {}
+    activities = review.get("recommendation_activities") or []
+    for activity in reversed(activities):
+        outputs = activity.get("outputs") if isinstance(activity, dict) else None
+        output = outputs.get("output") if isinstance(outputs, dict) else None
+        if not isinstance(output, str) or not output.strip().startswith("{"):
+            continue
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            continue
+        impact = payload.get("impact_mapper") or {}
+        return {
+            "severity": impact.get("severity"),
+            "exposure_value": impact.get("exposure_value"),
+            "recommended_strategy": payload.get("recommended_strategy"),
+        }
+    return {}
+
+
 @router.get("/operations")
 def get_operations_dashboard(
     limit: int = 10,
     db: Session = Depends(get_db),
 ):
     safe_limit = max(1, min(limit, 50))
+    stalled_after_minutes = max(
+        5,
+        int(os.getenv("DASHBOARD_STALLED_AFTER_MINUTES", "15")),
+    )
+    stalled_cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=stalled_after_minutes
+    )
 
     # ============================================================
     # 1. SUMMARY COUNTS
@@ -60,11 +93,87 @@ def get_operations_dashboard(
         .filter(
             AgentRun.status.in_(
                 ["running", "evaluating_policies"]
-            )
+            ),
+            AgentRun.triggered_at >= stalled_cutoff,
         )
         .scalar()
         or 0
     )
+
+    stalled_runs = (
+        db.query(func.count(AgentRun.id))
+        .filter(
+            AgentRun.status.in_(["running", "evaluating_policies"]),
+            AgentRun.triggered_at < stalled_cutoff,
+        )
+        .scalar()
+        or 0
+    )
+
+    pending_review_rows = (
+        db.query(WorkbenchItem.agent_run_id, WorkbenchItem.id)
+        .filter(WorkbenchItem.status == "pending")
+        .all()
+    )
+    pending_review_by_run = {
+        agent_run_id: item_id for agent_run_id, item_id in pending_review_rows
+    }
+
+    waiting_for_human_total = (
+        db.query(func.count(AgentRun.id))
+        .filter(AgentRun.status == "waiting_for_human")
+        .scalar()
+        or 0
+    )
+    waiting_for_human_runs = len(pending_review_by_run)
+    review_unavailable_runs = max(
+        0, waiting_for_human_total - waiting_for_human_runs
+    )
+
+    rejected_runs = (
+        db.query(func.count(AgentRun.id))
+        .filter(AgentRun.status == "rejected_by_human")
+        .scalar()
+        or 0
+    )
+
+    superseded_runs = (
+        db.query(func.count(AgentRun.id))
+        .filter(AgentRun.status == "superseded_by_human_decision")
+        .scalar()
+        or 0
+    )
+
+    known_status_runs = (
+        active_runs
+        + stalled_runs
+        + waiting_for_human_runs
+        + review_unavailable_runs
+        + completed_runs
+        + rejected_runs
+        + failed_runs
+        + blocked_runs
+        + superseded_runs
+    )
+
+    pending_reviews = waiting_for_human_runs
+
+    oldest_pending = (
+        db.query(WorkbenchItem)
+        .filter(WorkbenchItem.status == "pending")
+        .order_by(WorkbenchItem.created_at.asc())
+        .first()
+    )
+
+    oldest_wait_minutes = None
+    if oldest_pending and oldest_pending.created_at:
+        created_at = oldest_pending.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        oldest_wait_minutes = max(
+            0,
+            int((datetime.now(timezone.utc) - created_at).total_seconds() // 60),
+        )
 
     # ============================================================
     # 2. ACTIVITY CHART - LAST 7 DAYS
@@ -127,6 +236,30 @@ def get_operations_dashboard(
                     else_=0,
                 )
             ).label("active"),
+
+            func.sum(
+                case(
+                    (
+                        AgentRun.status == "superseded_by_human_decision",
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("human_assisted"),
+
+            func.sum(
+                case(
+                    (
+                        AgentRun.status.in_([
+                            "failed",
+                            "blocked_by_policy",
+                            "rejected_by_human",
+                        ]),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("unresolved"),
         )
 
         .filter(
@@ -148,6 +281,8 @@ def get_operations_dashboard(
             "blocked": int(row.blocked or 0),
             "failed": int(row.failed or 0),
             "active": int(row.active or 0),
+            "human_assisted": int(row.human_assisted or 0),
+            "unresolved": int(row.unresolved or 0),
         }
         for row in daily_rows
     }
@@ -165,6 +300,8 @@ def get_operations_dashboard(
                 "blocked": 0,
                 "failed": 0,
                 "active": 0,
+                "human_assisted": 0,
+                "unresolved": 0,
             },
         )
 
@@ -208,6 +345,31 @@ def get_operations_dashboard(
         ):
             raw_data = disruption.raw_data
 
+        if run.status == "waiting_for_human" and run.id not in pending_review_by_run:
+            effective_status = "review_unavailable"
+        elif run.status in ["running", "evaluating_policies"] and run.triggered_at < stalled_cutoff:
+            effective_status = "stalled"
+        else:
+            effective_status = run.status
+        recovery = _recovery_context(run.result)
+        severity = str(recovery.get("severity") or "").lower()
+        if effective_status == "waiting_for_human" or severity == "critical":
+            priority = "critical"
+        elif effective_status in ["stalled", "failed"] or severity == "high":
+            priority = "high"
+        elif effective_status == "blocked_by_policy" or severity == "medium":
+            priority = "medium"
+        else:
+            priority = "low"
+
+        triggered_at = run.triggered_at
+        if triggered_at and triggered_at.tzinfo is None:
+            triggered_at = triggered_at.replace(tzinfo=timezone.utc)
+        age_minutes = (
+            max(0, int((datetime.now(timezone.utc) - triggered_at).total_seconds() // 60))
+            if triggered_at else None
+        )
+
         recent_runs.append(
             {
                 "id": run.id,
@@ -228,11 +390,18 @@ def get_operations_dashboard(
                     "notice_type"
                 ),
 
+                "supplier_id": raw_data.get("notice_supplier_id"),
+                "severity": recovery.get("severity"),
+                "exposure_value": recovery.get("exposure_value"),
+                "recommended_strategy": recovery.get("recommended_strategy"),
+                "priority": priority,
+                "age_minutes": age_minutes,
+                "workbench_item_id": pending_review_by_run.get(run.id),
+
                 "supervity_run_id":
                     run.supervity_run_id,
 
-                "status":
-                    run.status,
+                "status": effective_status,
 
                 "triggered_at":
                     run.triggered_at,
@@ -335,6 +504,24 @@ def get_operations_dashboard(
             "blocked": blocked_runs,
             "failed": failed_runs,
             "active": active_runs,
+            "stalled": stalled_runs,
+            "waiting_for_human": waiting_for_human_runs,
+            "review_unavailable": review_unavailable_runs,
+            "rejected": rejected_runs,
+            "superseded": superseded_runs,
+            "other": max(0, total_runs - known_status_runs),
+            "stalled_after_minutes": stalled_after_minutes,
+        },
+
+        "action_required": {
+            "pending_reviews": pending_reviews,
+            "failed_runs": failed_runs,
+            "policy_blocks": blocked_runs,
+            "stalled_runs": stalled_runs,
+            "oldest_wait_minutes": oldest_wait_minutes,
+            "oldest_review_id": (
+                oldest_pending.id if oldest_pending else None
+            ),
         },
 
         "activity_chart": activity_chart,
