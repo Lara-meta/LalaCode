@@ -12,6 +12,9 @@ from .examples import router as examples_router
 from .health import router as health_router
 from .items import router as items_router
 from .orchestrator import router as orchestrator_router  # Import the orchestrator router
+from .policies import router as policies_router
+from .dashboard import router as dashboard_router
+from .workbench import router as workbench_router
 
 __all__ = [
     "health_router",
@@ -20,4 +23,8 @@ __all__ = [
     "audit_router",
     "items_router",
     "examples_router",
+    "orchestrator_router",  # Add the orchestrator router to the list
+    "policies_router",
+    "dashboard_router",
+    "workbench_router",
 ]

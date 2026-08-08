@@ -43,6 +43,9 @@ from .routers import (
     health_router,
     items_router,
     orchestrator_router,
+    policies_router,
+    dashboard_router,
+    workbench_router,
 )
 from .security import get_current_user, verify_access
 
@@ -154,7 +157,16 @@ api_router.include_router(items_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)
+api_router.include_router(orchestrator_router)  # Orchestrator endpoints
 
+# Policies
+api_router.include_router(policies_router)
+
+# Dashboard
+api_router.include_router(dashboard_router)
+
+# Workbench
+api_router.include_router(workbench_router)
 
 # =============================================================================
 # FILE STORAGE ENDPOINTS (kept inline for path matching order)
@@ -224,8 +236,6 @@ async def delete_file(
 # =============================================================================
 
 app.include_router(api_router)
-app.include_router(orchestrator_router)  # Mount the orchestrator router at /api/orchestrator
-
 
 # =============================================================================
 # ROOT ENDPOINT
