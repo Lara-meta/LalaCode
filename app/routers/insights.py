@@ -19,6 +19,17 @@ def _ratio(part: int, total: int) -> float:
     return round(part / total, 4) if total else 0.0
 
 
+def _duration_label(seconds: float) -> str:
+    total_seconds = max(0, round(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {remaining_seconds}s"
+    return f"{remaining_seconds}s"
+
+
 def _summary_for_runs(runs: list[AgentRun], actionable_review_run_ids: set[int]) -> dict:
     statuses = Counter(run.status for run in runs)
     durations = [
@@ -245,7 +256,7 @@ def get_orchestrator_insights(
             "title": f"{completed} workflows completed successfully",
             "description": (
                 f"Successful runs represent {_ratio(completed, total):.0%} of the analyzed history."
-                + (f" Average resolved duration is {average_duration:.0f} seconds." if average_duration is not None else "")
+                + (f" Average resolved duration is {_duration_label(average_duration)}." if average_duration is not None else "")
             ),
             "data": {"completed": completed, "completion_rate": _ratio(completed, total), "average_duration_seconds": average_duration},
             "suggested_action": "Use successful runs as the baseline for workflow optimization",

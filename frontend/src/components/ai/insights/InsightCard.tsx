@@ -123,6 +123,7 @@ export function InsightCard({ insight, onAction, onDismiss, onEvidence }: Insigh
     if (Array.isArray(value)) return `${value.length} affected run${value.length === 1 ? '' : 's'}`
     return String(value)
   }
+  const formatDataLabel = (key: string) => key.replace(/_seconds$/, '').replace(/_/g, ' ')
 
   return (
     <div className={cn(
@@ -195,7 +196,7 @@ export function InsightCard({ insight, onAction, onDismiss, onEvidence }: Insigh
                     'bg-white/50 text-xs font-medium text-foreground'
                   )}
                 >
-                  <span className="text-muted-foreground">{key.replace(/_/g, ' ')}:</span>
+                  <span className="text-muted-foreground">{formatDataLabel(key)}:</span>
                   <span className="font-semibold">{formatDataValue(key, value)}</span>
                 </span>
               ))}
