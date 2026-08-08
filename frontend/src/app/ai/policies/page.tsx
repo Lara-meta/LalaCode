@@ -596,9 +596,10 @@ setRuns(runData.runs)
       </Card>
 
       {/* ====================================================== */}
-{/* RECENT ORCHESTRATION RUNS */}
+{/* Recent orchestration runs now belong to AI Insights. */}
 {/* ====================================================== */}
 
+{false && (
 <Card>
 
   <CardHeader>
@@ -748,6 +749,7 @@ setRuns(runData.runs)
   </CardContent>
 
 </Card>
+)}
 
     </div>
   )

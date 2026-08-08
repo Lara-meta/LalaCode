@@ -26,6 +26,8 @@ type WorkbenchItem = {
   resolved_at: string | null
   agent_run_status: string
   supervity_run_id: string | null
+  review_source: string | null
+  review_url: string | null
   disruption_id: number
   external_id: string
   disruption: {
@@ -249,6 +251,13 @@ export default function WorkbenchPage() {
 
                 {selected.status === 'pending' && (
                   <>
+                    {selected.agent_run_status === 'waiting_for_human' && (
+                      <div className='rounded-xl border border-purple-200 bg-purple-50 p-4'>
+                        <p className='font-semibold text-purple-900'>Human approval required</p>
+                        <p className='mt-1 text-sm text-purple-800'>This orchestrator run is paused. The Workbench decision below controls whether it is rejected or allowed to continue.</p>
+                      </div>
+                    )}
+
                     <div>
                       <Label htmlFor='decision-notes'>Reviewer notes <span className='font-normal text-muted-foreground'>(optional)</span></Label>
                       <textarea id='decision-notes' value={notes} onChange={(event) => setNotes(event.target.value)} placeholder='Explain the decision for the audit trail...' className='mt-2 min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-cornflower' />

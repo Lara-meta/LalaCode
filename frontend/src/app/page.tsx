@@ -36,6 +36,7 @@ type Summary = {
   completed: number
   blocked: number
   failed: number
+  active: number
 }
 
 type ActivityData = {
@@ -45,6 +46,7 @@ type ActivityData = {
   completed: number
   blocked: number
   failed: number
+  active: number
 }
 
 type RecentRun = {
@@ -477,6 +479,13 @@ export default function HomePage() {
           description='All orchestration attempts'
         />
 
+         <SummaryCard
+          title='Active'
+          value={dashboard.summary.active}
+          icon={Icons.loader}
+          description='Currently in progress'
+        />
+
         <SummaryCard
           title='Completed'
           value={dashboard.summary.completed}
@@ -497,6 +506,8 @@ export default function HomePage() {
           icon={Icons.alertTriangle}
           description='Runs that ended with errors'
         />
+
+
 
       </div>
 

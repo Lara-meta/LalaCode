@@ -46,6 +46,7 @@ from .routers import (
     policies_router,
     dashboard_router,
     workbench_router,
+    insights_router,
 )
 from .security import get_current_user, verify_access
 
@@ -167,6 +168,9 @@ api_router.include_router(dashboard_router)
 
 # Workbench
 api_router.include_router(workbench_router)
+
+# Orchestrator-derived AI insights
+api_router.include_router(insights_router)
 
 # =============================================================================
 # FILE STORAGE ENDPOINTS (kept inline for path matching order)

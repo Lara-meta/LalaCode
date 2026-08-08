@@ -15,6 +15,7 @@ from .orchestrator import router as orchestrator_router  # Import the orchestrat
 from .policies import router as policies_router
 from .dashboard import router as dashboard_router
 from .workbench import router as workbench_router
+from .insights import router as insights_router
 
 __all__ = [
     "health_router",
@@ -27,4 +28,5 @@ __all__ = [
     "policies_router",
     "dashboard_router",
     "workbench_router",
+    "insights_router",
 ]

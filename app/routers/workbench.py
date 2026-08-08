@@ -70,6 +70,13 @@ def _serialize_item(
     if isinstance(disruption.raw_data, dict):
         raw_data = disruption.raw_data
 
+    run_result = (
+        agent_run.result
+        if isinstance(agent_run.result, dict)
+        else {}
+    )
+    human_review = run_result.get("human_review") or {}
+
     return {
         "id": item.id,
         "agent_run_id": item.agent_run_id,
@@ -82,6 +89,8 @@ def _serialize_item(
 
         "agent_run_status": agent_run.status,
         "supervity_run_id": agent_run.supervity_run_id,
+        "review_source": human_review.get("source"),
+        "review_url": human_review.get("review_url"),
 
         "disruption_id": disruption.id,
         "external_id": disruption.external_id,
@@ -111,6 +120,37 @@ def list_workbench_items(
         1,
         min(limit, 100),
     )
+
+    # Reconcile live Supervity human stops created before the
+    # Workbench callback integration (and recover safely if a
+    # callback was interrupted after updating the run status).
+    waiting_runs = (
+        db.query(AgentRun)
+        .outerjoin(
+            WorkbenchItem,
+            WorkbenchItem.agent_run_id == AgentRun.id,
+        )
+        .filter(
+            AgentRun.status == "waiting_for_human",
+            WorkbenchItem.id.is_(None),
+        )
+        .all()
+    )
+
+    for waiting_run in waiting_runs:
+        db.add(
+            WorkbenchItem(
+                agent_run_id=waiting_run.id,
+                reason=(
+                    "Supervity recovery workflow requires "
+                    "human approval."
+                ),
+                status="pending",
+            )
+        )
+
+    if waiting_runs:
+        db.commit()
 
     query = (
         db.query(
@@ -263,12 +303,15 @@ def make_workbench_decision(
             detail="Original agent run not found",
         )
 
-    if original_run.status != "blocked_by_policy":
+    if original_run.status not in {
+        "blocked_by_policy",
+        "waiting_for_human",
+    }:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Workbench review is only allowed "
-                "for a policy-blocked run"
+                "Workbench review is only allowed for a "
+                "policy-blocked or human-waiting run"
             ),
         )
 
@@ -482,12 +525,15 @@ async def resume_workbench_item(
             detail="Original agent run not found",
         )
 
-    if original_run.status != "blocked_by_policy":
+    if original_run.status not in {
+        "blocked_by_policy",
+        "waiting_for_human",
+    }:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Only policy-blocked runs "
-                "can be resumed"
+                "Only policy-blocked or human-waiting "
+                "runs can be resumed"
             ),
         )
 

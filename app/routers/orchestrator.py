@@ -491,6 +491,45 @@ async def run_orchestrator(
                 )
             )
 
+            # Persist the live review context so the local
+            # Workbench can surface the same human stop.
+            run_result = dict(agent_run.result or {})
+            run_result["human_review"] = {
+                "source": "supervity",
+                "review_url": review_url,
+                "step_id": step_id,
+                "status": "waiting",
+            }
+            agent_run.result = run_result
+
+            workbench_item = (
+                db.query(WorkbenchItem)
+                .filter(
+                    WorkbenchItem.agent_run_id
+                    == agent_run.id
+                )
+                .first()
+            )
+
+            if workbench_item is None:
+                workbench_item = WorkbenchItem(
+                    agent_run_id=agent_run.id,
+                    reason=(
+                        "Supervity recovery workflow "
+                        "requires human approval."
+                    ),
+                    status="pending",
+                )
+                db.add(workbench_item)
+            elif workbench_item.status == "pending":
+                workbench_item.reason = (
+                    "Supervity recovery workflow "
+                    "requires human approval."
+                )
+
+            db.commit()
+            db.refresh(agent_run)
+
 
             # ----------------------------------------------
             # Send Admin notification ONCE
@@ -559,6 +598,26 @@ async def run_orchestrator(
 
             if agent_run.status != "running":
                 agent_run.status = "running"
+
+                workbench_item = (
+                    db.query(WorkbenchItem)
+                    .filter(
+                        WorkbenchItem.agent_run_id
+                        == agent_run.id,
+                        WorkbenchItem.status == "pending",
+                    )
+                    .first()
+                )
+
+                if workbench_item:
+                    workbench_item.status = "resumed"
+                    workbench_item.decision_notes = (
+                        "Human review completed in Supervity; "
+                        "workflow resumed automatically."
+                    )
+                    workbench_item.resolved_at = (
+                        datetime.now(timezone.utc)
+                    )
 
                 db.commit()
                 db.refresh(agent_run)
