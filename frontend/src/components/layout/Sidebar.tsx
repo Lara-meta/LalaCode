@@ -15,6 +15,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { useSession } from 'next-auth/react'
+import { useProfile } from '@/hooks/useProfile'
 
 // Sidebar context for collapse state
 interface SidebarContextType {
@@ -163,6 +164,10 @@ function NavLink({
 // User section at bottom of sidebar
 function SidebarUser({ isCollapsed }: { isCollapsed: boolean }) {
   const { data: session } = useSession()
+  const { profile } = useProfile({
+    name: session?.user?.name || undefined,
+    email: session?.user?.email || undefined,
+  })
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH || ''
 
   if (!session?.user) return null
@@ -177,7 +182,7 @@ function SidebarUser({ isCollapsed }: { isCollapsed: boolean }) {
     >
       <Avatar
         src={session.user.image}
-        fallback={session.user.name || session.user.email || '?'}
+        fallback={profile.name || profile.email || '?'}
         size='sm'
         showStatus
         status='online'
@@ -186,10 +191,10 @@ function SidebarUser({ isCollapsed }: { isCollapsed: boolean }) {
       {!isCollapsed && (
         <div className='min-w-0 flex-1'>
           <p className='truncate text-sm font-medium text-brand-navy'>
-            {session.user.name}
+            {profile.name}
           </p>
           <p className='truncate text-xs text-brand-muted'>
-            {session.user.email}
+            {profile.email}
           </p>
         </div>
       )}

@@ -2,12 +2,14 @@
 
 import React from 'react'
 import { usePathname } from 'next/navigation'
+import { useSession } from 'next-auth/react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/ui/avatar'
 import { Icons } from '@/components/ui/icons'
 import { useAI } from '@/context/AIContext'
 import { NotificationCenter } from '@/components/NotificationCenter'
+import { useProfile } from '@/hooks/useProfile'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -131,7 +133,11 @@ function AIManagerTrigger() {
 
 // User menu with dropdown
 function UserMenu() {
-  const user = { name: 'Dev User', email: 'dev@autopilot.local' }
+  const { data: session } = useSession()
+  const { profile: user } = useProfile({
+    name: session?.user?.name || undefined,
+    email: session?.user?.email || undefined,
+  })
 
   return (
     <DropdownMenu>

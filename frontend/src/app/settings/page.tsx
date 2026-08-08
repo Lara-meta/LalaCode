@@ -15,6 +15,9 @@ import { Avatar } from '@/components/ui/avatar'
 import { Icons } from '@/components/ui/icons'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
+import { useProfile } from '@/hooks/useProfile'
+import toast from 'react-hot-toast'
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -89,6 +92,29 @@ function SettingToggle({
 
 export default function SettingsPage() {
   const { data: session } = useSession()
+  const { profile, saveProfile } = useProfile({
+    name: session?.user?.name || undefined,
+    email: session?.user?.email || undefined,
+  })
+  const [editingProfile, setEditingProfile] = useState(false)
+  const [profileName, setProfileName] = useState('')
+  const [profileEmail, setProfileEmail] = useState('')
+
+  function beginProfileEdit() {
+    setProfileName(profile.name)
+    setProfileEmail(profile.email)
+    setEditingProfile(true)
+  }
+
+  function saveProfileChanges() {
+    if (!profileName.trim() || !profileEmail.trim() || !profileEmail.includes('@')) {
+      toast.error('Enter a valid name and email address.')
+      return
+    }
+    saveProfile({ name: profileName.trim(), email: profileEmail.trim() })
+    setEditingProfile(false)
+    toast.success('Profile updated.')
+  }
 
   return (
     <motion.div
@@ -118,26 +144,31 @@ export default function SettingsPage() {
             <div className='flex items-center gap-6'>
               <Avatar
                 src={session?.user?.image}
-                fallback={session?.user?.name || session?.user?.email || '?'}
+                fallback={profile.name || profile.email || '?'}
                 size='lg'
                 showRing
               />
               <div className='flex-1'>
                 <h3 className='text-lg font-semibold text-foreground'>
-                  {session?.user?.name || 'User'}
+                  {profile.name}
                 </h3>
                 <p className='text-sm text-muted-foreground'>
-                  {session?.user?.email}
+                  {profile.email}
                 </p>
                 <p className='mt-1 text-xs text-muted-foreground'>
                   AutoPilot Developer
                 </p>
               </div>
-              <Button variant='outline'>
+              <Button variant='outline' onClick={beginProfileEdit}>
                 <Icons.externalLink className='mr-2 h-4 w-4' />
                 Edit Profile
               </Button>
             </div>
+            {editingProfile && <div className='mt-6 grid gap-4 border-t pt-5 sm:grid-cols-2'>
+              <div><Label htmlFor='profile-name'>Display name</Label><Input id='profile-name' className='mt-1.5' value={profileName} onChange={(event) => setProfileName(event.target.value)} /></div>
+              <div><Label htmlFor='profile-email'>Email address</Label><Input id='profile-email' type='email' className='mt-1.5' value={profileEmail} onChange={(event) => setProfileEmail(event.target.value)} /></div>
+              <div className='flex gap-2 sm:col-span-2'><Button onClick={saveProfileChanges}>Save profile</Button><Button variant='outline' onClick={() => setEditingProfile(false)}>Cancel</Button></div>
+            </div>}
           </CardContent>
         </Card>
       </motion.div>
