@@ -12,6 +12,7 @@ from ..models.operator_result import OperatorResult
 from ..models.workbench_item import WorkbenchItem
 from ..services.supervity import (
     SupervityError,
+    submit_user_form,
     trigger_orchestrator_run,
 )
 
@@ -674,6 +675,73 @@ async def resume_workbench_item(
                 + ", ".join(missing_fields)
             ),
         )
+
+    # Resume the existing paused Supervity workflow by submitting its
+    # human-review form. Starting a new workflow here would lose the
+    # selected recovery action and create another approval checkpoint.
+    run_result = original_run.result if isinstance(original_run.result, dict) else {}
+    human_review = run_result.get("human_review") or {}
+    form_data = human_review.get("form_data") or {}
+    activity_run_id = form_data.get("activityRunId")
+
+    if activity_run_id:
+        selected_strategy = str(
+            raw_data.get("selected_recovery_strategy") or ""
+        ).strip()
+        decision_value = next(
+            (
+                value for prefix, value in (
+                    ("rush", "Rush"),
+                    ("swap", "Swap"),
+                    ("absorb", "Absorb"),
+                    ("cancel", "Cancel"),
+                    ("escalate", "Escalate"),
+                )
+                if selected_strategy.lower().startswith(prefix)
+            ),
+            selected_strategy,
+        )
+        if not decision_value:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot resume without a selected recovery action",
+            )
+
+        try:
+            await submit_user_form(
+                str(activity_run_id),
+                "approve",
+                {"decision": decision_value},
+            )
+        except SupervityError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        original_run.status = "running"
+        original_run.completed_at = None
+        item.status = "resumed"
+        existing_notes = item.decision_notes or ""
+        resume_note = (
+            f"Approved '{selected_strategy}' and returned the decision "
+            f"to Supervity activity {activity_run_id}."
+        )
+        item.decision_notes = (
+            f"{existing_notes} | {resume_note}" if existing_notes else resume_note
+        )
+        if item.resolved_at is None:
+            item.resolved_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(item)
+
+        return {
+            "status": "resuming",
+            "workbench_item_id": item.id,
+            "review_decision": review_status,
+            "workbench_status": item.status,
+            "original_agent_run_id": original_run.id,
+            "workflow_run_id": original_run.supervity_run_id,
+            "activity_run_id": str(activity_run_id),
+            "selected_recovery_strategy": selected_strategy,
+        }
 
     # ========================================================
     # 5. CREATE A NEW AGENT RUN

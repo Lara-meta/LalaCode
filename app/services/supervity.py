@@ -125,6 +125,30 @@ def _headers(
     return headers
 
 
+async def submit_user_form(
+    activity_run_id: str,
+    status: str,
+    form_data: dict[str, str],
+) -> None:
+    """Submit a human decision and resume the existing Supervity run."""
+    if status not in {"approve", "reject"}:
+        raise SupervityError("Unsupported Supervity review status")
+
+    endpoint = f"{SUPERVITY_BASE_URL}/user-forms/{activity_run_id}/{status}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(endpoint, data=form_data)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise SupervityError(
+            f"Supervity rejected the human decision ({exc.response.status_code})."
+        ) from exc
+    except httpx.RequestError as exc:
+        raise SupervityError(
+            f"Could not submit the human decision to Supervity: {exc}"
+        ) from exc
+
+
 # ============================================================
 # HELPERS
 # ============================================================
