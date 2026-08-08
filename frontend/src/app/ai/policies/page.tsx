@@ -57,7 +57,7 @@ type PolicyUpdateResponse = {
 export default function PoliciesPage() {
   const [policies, setPolicies] = useState<Policy[]>([])
   const [evaluations, setEvaluations] = useState<PolicyEvaluation[]>([])
-  const [runs, setRuns] = useState<AgentRun[]>([])  
+  const [runs, setRuns] = useState<AgentRun[]>([])
 
   const [draftValues, setDraftValues] = useState<Record<number, string>>({})
 
