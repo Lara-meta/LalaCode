@@ -56,11 +56,15 @@ def get_operations_dashboard(
     )
 
     active_runs = (
-    db.query(func.count(AgentRun.id))
-    .filter(AgentRun.status.in_(["running", "evaluating_policies"]))
-    .scalar()
-    or 0
-)
+        db.query(func.count(AgentRun.id))
+        .filter(
+            AgentRun.status.in_(
+                ["running", "evaluating_policies"]
+            )
+        )
+        .scalar()
+        or 0
+    )
 
     # ============================================================
     # 2. ACTIVITY CHART - LAST 7 DAYS
@@ -111,16 +115,19 @@ def get_operations_dashboard(
                     else_=0,
                 )
             ).label("failed"),
-        )
+
             func.sum(
-        case(
-            (
-                AgentRun.status.in_(["running", "evaluating_policies"]),
-                1,
-            ),
-            else_=0,
+                case(
+                    (
+                        AgentRun.status.in_(
+                            ["running", "evaluating_policies"]
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("active"),
         )
-    ).label("active"),
 
         .filter(
             AgentRun.triggered_at >= start_datetime
