@@ -14,7 +14,7 @@ import {
 
 type Policy = {
   id: number; name: string; policy_type: string; description: string | null
-  threshold_value: number | null; enabled: boolean; status: string; version: number
+  threshold_value: number | null; comparison_value: unknown; enabled: boolean; status: string; version: number
   field_name: string | null; operator: string; unit: string | null; action: string
   scope: Record<string, unknown>; fail_mode: string; priority: number
   effective_from: string | null; effective_until: string | null
@@ -26,11 +26,12 @@ type EvaluationRun = { run_id: number; final_decision: string; passed: number; t
 type EvaluationResponse = { page: number; page_size: number; total: number; runs: EvaluationRun[] }
 type Simulation = { runs_tested: number; would_block: number; block_rate: number; errors: number; results: Array<{ run_id: number; outcome: string; calculation: string | null; reason: string }> }
 type History = { versions: Array<{ id: number; version: number; reason: string; actor: string | null; created_at: string }>; audit: Array<{ id: number; action: string; from_version: number | null; to_version: number | null; reason: string; actor: string | null; created_at: string }> }
+type PolicyField = { name: string; label: string; type: 'number' | 'string'; stage: string; required: boolean; operators: string[]; unit?: string; available_runs: number; coverage_percent: number }
 
 const TYPE_DEFAULTS: Record<string, Partial<Policy>> = {
   severity_threshold: { field_name: 'severity', operator: 'gt', unit: 'score_10', threshold_value: 7 },
   expedite_spend_limit: { field_name: 'expedite_cost', operator: 'gt', unit: 'USD', threshold_value: 10000 },
-  contract_clause_block: { field_name: 'x_escalation_clause', operator: 'not_empty', unit: null, threshold_value: null },
+  contract_clause_block: { field_name: 'contract_clauses', operator: 'not_empty', unit: null, threshold_value: null },
 }
 const emptyDraft = { name: '', policy_type: 'severity_threshold', description: '', threshold_value: '7', field_name: 'severity', operator: 'gt', unit: 'score_10', scopeKey: '', scopeValue: '', fail_mode: 'closed', priority: '100', change_reason: '' }
 
@@ -49,6 +50,7 @@ export default function PoliciesPage() {
   const [tab, setTab] = useState<'policies' | 'evaluations' | 'simulations' | 'history'>('policies')
   const [policies, setPolicies] = useState<Policy[]>([])
   const [metrics, setMetrics] = useState<Metrics | null>(null)
+  const [fields, setFields] = useState<PolicyField[]>([])
   const [evaluationData, setEvaluationData] = useState<EvaluationResponse>({ page: 1, page_size: 20, total: 0, runs: [] })
   const [expandedRun, setExpandedRun] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -72,12 +74,13 @@ export default function PoliciesPage() {
     try {
       const query = new URLSearchParams({ page: String(page), page_size: '20', outcome })
       if (search.trim()) query.set('search', search.trim())
-      const [policyResult, metricResult, evaluations] = await Promise.all([
+      const [policyResult, metricResult, evaluations, fieldResult] = await Promise.all([
         apiClient.get<{ policies: Policy[] }>('/api/policies'),
         apiClient.get<Metrics>('/api/policies/metrics'),
         apiClient.get<EvaluationResponse>(`/api/policies/evaluations?${query}`),
+        apiClient.get<{ fields: PolicyField[] }>('/api/policies/fields'),
       ])
-      setPolicies(policyResult.policies); setMetrics(metricResult); setEvaluationData(evaluations)
+      setPolicies(policyResult.policies); setMetrics(metricResult); setEvaluationData(evaluations); setFields(fieldResult.fields)
     } catch (err) { setError(err instanceof Error ? err.message : 'Failed to load policy governance') }
     finally { setLoading(false) }
   }, [outcome, page, search])
@@ -88,7 +91,8 @@ export default function PoliciesPage() {
   const openEdit = (policy: Policy) => {
     setEditing(policy)
     const scopeEntry = Object.entries(policy.scope || {})[0]
-    setDraft({ name: policy.name, policy_type: policy.policy_type, description: policy.description || '', threshold_value: policy.threshold_value === null ? '' : String(policy.threshold_value), field_name: policy.field_name || '', operator: policy.operator, unit: policy.unit || '', scopeKey: scopeEntry?.[0] || '', scopeValue: scopeEntry ? String(scopeEntry[1]) : '', fail_mode: policy.fail_mode, priority: String(policy.priority), change_reason: '' })
+    const value = policy.comparison_value ?? policy.threshold_value
+    setDraft({ name: policy.name, policy_type: policy.policy_type, description: policy.description || '', threshold_value: value === null || value === undefined ? '' : String(value), field_name: policy.field_name || '', operator: policy.operator, unit: policy.unit || '', scopeKey: scopeEntry?.[0] || '', scopeValue: scopeEntry ? String(scopeEntry[1]) : '', fail_mode: policy.fail_mode, priority: String(policy.priority), change_reason: '' })
     setEditorOpen(true)
   }
   const changeType = (type: string) => {
@@ -97,12 +101,19 @@ export default function PoliciesPage() {
   }
   const payload = () => ({
     name: draft.name, policy_type: draft.policy_type, description: draft.description || null,
-    threshold_value: draft.operator === 'not_empty' ? null : Number(draft.threshold_value),
+    threshold_value: draft.operator === 'not_empty' || fields.find(f => f.name === draft.field_name)?.type !== 'number' ? null : Number(draft.threshold_value),
+    comparison_value: draft.operator === 'not_empty' ? null : fields.find(f => f.name === draft.field_name)?.type === 'number' ? null : draft.threshold_value,
     field_name: draft.field_name, operator: draft.operator, unit: draft.unit || null,
     action: 'block', scope: draft.scopeKey && draft.scopeValue ? { [draft.scopeKey]: draft.scopeValue } : {},
     fail_mode: draft.fail_mode, priority: Number(draft.priority), actor,
     change_reason: draft.change_reason || (editing ? 'Policy configuration updated' : 'Policy draft created'),
   })
+  const selectedField = fields.find(field => field.name === draft.field_name)
+  const changeField = (name: string) => {
+    const field = fields.find(item => item.name === name)
+    if (!field) return
+    setDraft(current => ({ ...current, field_name: name, operator: field.operators[0], unit: field.unit || '', threshold_value: field.type === 'number' ? current.threshold_value : '' }))
+  }
   const save = async () => {
     if (!draft.name.trim()) return setError('Policy name is required.')
     setBusy(true); setError('')
@@ -215,7 +226,7 @@ export default function PoliciesPage() {
     {tab === 'history' && <Card><CardHeader><CardTitle>Change history {historyPolicy ? `— ${historyPolicy.name}` : ''}</CardTitle><p className='text-sm text-muted-foreground'>Select History on a policy to inspect versions, actors, reasons, and rollback options.</p></CardHeader><CardContent>{!history ? <p className='py-10 text-center text-muted-foreground'>No policy selected.</p> : <div className='space-y-3'>{history.audit.map(event => <div key={event.id} className='flex flex-col gap-2 rounded-xl border p-4 sm:flex-row sm:items-center'><div className='flex-1'><div className='flex items-center gap-2'><Badge tone='blue'>{event.action}</Badge><strong>v{event.from_version ?? '—'} → v{event.to_version ?? '—'}</strong></div><p className='mt-2 text-sm'>{event.reason}</p><p className='mt-1 text-xs text-muted-foreground'>{event.actor || 'system'} · {new Date(event.created_at).toLocaleString()}</p></div>{event.from_version && <Button size='sm' variant='outline' onClick={() => rollback(event.from_version!)}>Restore v{event.from_version}</Button>}</div>)}</div>}</CardContent></Card>}
 
     <Dialog open={editorOpen} onOpenChange={setEditorOpen}><DialogContent className='max-h-[90vh] max-w-2xl overflow-y-auto'><DialogHeader><DialogTitle>{editing ? `Edit ${editing.name}` : 'Create policy draft'}</DialogTitle><DialogDescription>Define the business rule clearly. Changes remain a draft until simulated and activated.</DialogDescription></DialogHeader>
-      <div className='grid gap-4 py-2 sm:grid-cols-2'><label className='space-y-1 text-sm'><span>Name</span><Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}/></label><label className='space-y-1 text-sm'><span>Policy type</span><select value={draft.policy_type} onChange={e => changeType(e.target.value)} disabled={!!editing} className='h-10 w-full rounded-lg border bg-white px-3'><option value='severity_threshold'>Severity threshold</option><option value='expedite_spend_limit'>Expedite spend limit</option><option value='contract_clause_block'>Contract clause block</option></select></label><label className='space-y-1 text-sm sm:col-span-2'><span>Description</span><textarea value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} className='min-h-20 w-full rounded-lg border p-3'/></label><label className='space-y-1 text-sm'><span>Input field</span><Input value={draft.field_name} onChange={e => setDraft({ ...draft, field_name: e.target.value })}/></label><label className='space-y-1 text-sm'><span>Comparison</span><select value={draft.operator} onChange={e => setDraft({ ...draft, operator: e.target.value })} className='h-10 w-full rounded-lg border bg-white px-3'><option value='gt'>Greater than</option><option value='gte'>At least</option><option value='lt'>Less than</option><option value='lte'>At most</option><option value='eq'>Equal to</option><option value='contains'>Contains</option><option value='not_empty'>Is present</option></select></label>{draft.operator !== 'not_empty' && <label className='space-y-1 text-sm'><span>Threshold</span><Input type='number' value={draft.threshold_value} onChange={e => setDraft({ ...draft, threshold_value: e.target.value })}/></label>}<label className='space-y-1 text-sm'><span>Unit</span><select value={draft.unit} onChange={e => setDraft({ ...draft, unit: e.target.value })} className='h-10 w-full rounded-lg border bg-white px-3'><option value=''>None</option><option value='USD'>USD</option><option value='score_10'>Score out of 10</option></select></label><label className='space-y-1 text-sm'><span>Scope field (optional)</span><Input placeholder='notice_type' value={draft.scopeKey} onChange={e => setDraft({ ...draft, scopeKey: e.target.value })}/></label><label className='space-y-1 text-sm'><span>Scope value</span><Input placeholder='supplier_delay' value={draft.scopeValue} onChange={e => setDraft({ ...draft, scopeValue: e.target.value })}/></label><label className='space-y-1 text-sm'><span>Missing data behavior</span><select value={draft.fail_mode} onChange={e => setDraft({ ...draft, fail_mode: e.target.value })} className='h-10 w-full rounded-lg border bg-white px-3'><option value='closed'>Fail closed (block)</option><option value='open'>Fail open (allow)</option></select></label><label className='space-y-1 text-sm'><span>Priority</span><Input type='number' value={draft.priority} onChange={e => setDraft({ ...draft, priority: e.target.value })}/></label><label className='space-y-1 text-sm sm:col-span-2'><span>Change reason</span><Input placeholder='Why is this policy being created or changed?' value={draft.change_reason} onChange={e => setDraft({ ...draft, change_reason: e.target.value })}/></label></div>
+      <div className='grid gap-4 py-2 sm:grid-cols-2'><label className='space-y-1 text-sm'><span>Name</span><Input value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })}/></label><label className='space-y-1 text-sm'><span>Policy type</span><select value={draft.policy_type} onChange={e => changeType(e.target.value)} disabled={!!editing} className='h-10 w-full rounded-lg border bg-white px-3'><option value='severity_threshold'>Severity threshold</option><option value='expedite_spend_limit'>Expedite spend limit</option><option value='contract_clause_block'>Contract clause block</option></select></label><label className='space-y-1 text-sm sm:col-span-2'><span>Description</span><textarea value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} className='min-h-20 w-full rounded-lg border p-3'/></label><label className='space-y-1 text-sm'><span>Input field</span><select value={draft.field_name} onChange={e => changeField(e.target.value)} className='h-10 w-full rounded-lg border bg-white px-3'>{fields.map(field => <option key={field.name} value={field.name}>{field.label} ({field.coverage_percent}% coverage)</option>)}</select>{selectedField && <span className='block text-xs text-muted-foreground'>{selectedField.available_runs} historical runs · {selectedField.stage.replace('_', ' ')} stage · {selectedField.required ? 'required' : 'optional'}</span>}</label><label className='space-y-1 text-sm'><span>Comparison</span><select value={draft.operator} onChange={e => setDraft({ ...draft, operator: e.target.value })} className='h-10 w-full rounded-lg border bg-white px-3'>{(selectedField?.operators || []).map(operator => <option key={operator} value={operator}>{operator.replace('_', ' ')}</option>)}</select></label>{draft.operator !== 'not_empty' && <label className='space-y-1 text-sm'><span>Comparison value</span><Input type={selectedField?.type === 'number' ? 'number' : 'text'} value={draft.threshold_value} onChange={e => setDraft({ ...draft, threshold_value: e.target.value })}/></label>}<label className='space-y-1 text-sm'><span>Unit</span><Input value={draft.unit} readOnly className='bg-gray-50'/></label><label className='space-y-1 text-sm'><span>Scope field (optional)</span><select value={draft.scopeKey} onChange={e => setDraft({ ...draft, scopeKey: e.target.value })} className='h-10 w-full rounded-lg border bg-white px-3'><option value=''>All runs</option>{fields.filter(field => field.stage === 'preflight').map(field => <option key={field.name} value={field.name}>{field.label}</option>)}</select></label><label className='space-y-1 text-sm'><span>Scope value</span><Input placeholder='supplier_delay' value={draft.scopeValue} disabled={!draft.scopeKey} onChange={e => setDraft({ ...draft, scopeValue: e.target.value })}/></label><label className='space-y-1 text-sm'><span>Missing data behavior</span><select value={draft.fail_mode} onChange={e => setDraft({ ...draft, fail_mode: e.target.value })} className='h-10 w-full rounded-lg border bg-white px-3'><option value='closed'>Fail closed (block required-field errors)</option><option value='open'>Fail open (allow required-field errors)</option></select></label><label className='space-y-1 text-sm'><span>Priority</span><Input type='number' value={draft.priority} onChange={e => setDraft({ ...draft, priority: e.target.value })}/></label><label className='space-y-1 text-sm sm:col-span-2'><span>Change reason</span><Input placeholder='Why is this policy being created or changed?' value={draft.change_reason} onChange={e => setDraft({ ...draft, change_reason: e.target.value })}/></label></div>
       <DialogFooter><Button variant='outline' onClick={() => setEditorOpen(false)}>Cancel</Button><Button onClick={save} disabled={busy}>{busy ? 'Saving…' : editing ? 'Save new version' : 'Create draft'}</Button></DialogFooter>
     </DialogContent></Dialog>
 

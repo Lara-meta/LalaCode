@@ -12,5 +12,7 @@ class AgentRun(Base):
     supervity_run_id = Column(String, nullable=True, index=True)
     status = Column(String, default="running", index=True)
     result = Column(JSON, nullable=True)
+    policy_context = Column(JSON, nullable=True)
+    policy_context_stage = Column(String, nullable=True)
     triggered_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)

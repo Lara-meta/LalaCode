@@ -19,6 +19,14 @@ router = APIRouter(
 )
 
 
+def _first_present(mapping, *keys):
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
 def _recovery_context(result):
     """Extract decision-level impact without exposing raw workflow noise."""
     if not isinstance(result, dict):
@@ -38,9 +46,31 @@ def _recovery_context(result):
         return {
             "severity": impact.get("severity"),
             "exposure_value": impact.get("exposure_value"),
+            "days_until_impact": impact.get("days_until_impact"),
             "recommended_strategy": payload.get("recommended_strategy"),
+            "cost_avoided": _first_present(payload, "cost_avoided", "estimated_cost_avoided"),
+            "expedite_cost": _first_present(payload, "expedite_cost", "estimated_expedite_cost", "expedite_spend"),
+            "fill_rate": payload.get("fill_rate") or impact.get("fill_rate"),
+        }
+    policy_context = result.get("policy_context") or {}
+    if isinstance(policy_context, dict):
+        return {
+            "severity": policy_context.get("severity"),
+            "exposure_value": policy_context.get("exposure_value"),
+            "days_until_impact": policy_context.get("days_until_impact"),
+            "recommended_strategy": policy_context.get("recommended_strategy"),
+            "cost_avoided": policy_context.get("cost_avoided"),
+            "expedite_cost": policy_context.get("expedite_cost"),
+            "fill_rate": policy_context.get("fill_rate"),
         }
     return {}
+
+
+def _number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @router.get("/operations")
@@ -174,6 +204,50 @@ def get_operations_dashboard(
             0,
             int((datetime.now(timezone.utc) - created_at).total_seconds() // 60),
         )
+
+    # Procurement outcome KPIs are calculated only from successfully resolved
+    # runs with captured evidence. Missing values remain explicitly unavailable.
+    resolved_rows = (
+        db.query(AgentRun, Disruption)
+        .outerjoin(Disruption, AgentRun.disruption_id == Disruption.id)
+        .filter(AgentRun.status.in_(["completed", "superseded_by_human_decision"]))
+        .all()
+    )
+    resolved_runs = [run for run, _ in resolved_rows]
+    resolved_contexts = []
+    for run, disruption in resolved_rows:
+        context = _recovery_context(run.result)
+        raw_data = disruption.raw_data if disruption and isinstance(disruption.raw_data, dict) else {}
+        if context.get("expedite_cost") is None:
+            context["expedite_cost"] = _first_present(
+                raw_data,
+                "expedite_cost",
+                "estimated_expedite_cost",
+                "expedite_spend",
+            )
+        strategy = (
+            context.get("recommended_strategy")
+            or raw_data.get("selected_recovery_strategy")
+        )
+        # An explicit resolved strategy that is not an expedite/rush action
+        # is authoritative evidence that this case incurred zero expedite spend.
+        if (
+            context.get("expedite_cost") is None
+            and strategy
+            and not any(term in str(strategy).lower() for term in ("expedite", "rush"))
+        ):
+            context["expedite_cost"] = 0
+        resolved_contexts.append(context)
+    exposures = [value for value in (_number(item.get("exposure_value")) for item in resolved_contexts) if value is not None]
+    avoided = [value for value in (_number(item.get("cost_avoided")) for item in resolved_contexts) if value is not None]
+    expedite = [value for value in (_number(item.get("expedite_cost")) for item in resolved_contexts) if value is not None]
+    fill_rates = [value for value in (_number(item.get("fill_rate")) for item in resolved_contexts) if value is not None]
+    durations = []
+    for run in resolved_runs:
+        if run.triggered_at and run.completed_at:
+            started = run.triggered_at.replace(tzinfo=timezone.utc) if run.triggered_at.tzinfo is None else run.triggered_at
+            ended = run.completed_at.replace(tzinfo=timezone.utc) if run.completed_at.tzinfo is None else run.completed_at
+            durations.append(max(0, (ended - started).total_seconds() / 60))
 
     # ============================================================
     # 2. ACTIVITY CHART - LAST 7 DAYS
@@ -329,13 +403,32 @@ def get_operations_dashboard(
         .order_by(
             AgentRun.id.desc()
         )
-        .limit(safe_limit)
+        .limit(200)
         .all()
     )
 
+    # The disruption queue is a current operational view, not a raw attempt
+    # log. Keep only the newest run for each disruption while retaining the
+    # complete attempt history in summary and Insights metrics.
+    current_run_rows = []
+    seen_disruptions = set()
+    for row in recent_run_rows:
+        run, disruption = row
+        key = disruption.id if disruption else f"run:{run.id}"
+        if key in seen_disruptions:
+            continue
+        raw = disruption.raw_data if disruption and isinstance(disruption.raw_data, dict) else {}
+        placeholder_values = {"string", "test", "example"}
+        if str(raw.get("item_number", "")).strip().lower() in placeholder_values:
+            continue
+        seen_disruptions.add(key)
+        current_run_rows.append(row)
+        if len(current_run_rows) >= safe_limit:
+            break
+
     recent_runs = []
 
-    for run, disruption in recent_run_rows:
+    for run, disruption in current_run_rows:
 
         raw_data = {}
 
@@ -522,6 +615,21 @@ def get_operations_dashboard(
             "oldest_review_id": (
                 oldest_pending.id if oldest_pending else None
             ),
+        },
+
+        "procurement_outcomes": {
+            "resolved_disruptions": len(resolved_runs),
+            "cost_at_risk": round(sum(exposures), 2) if exposures else None,
+            "cost_avoided": round(sum(avoided), 2) if avoided else None,
+            "expedite_spend": round(sum(expedite), 2) if expedite else None,
+            "average_recovery_minutes": round(sum(durations) / len(durations), 1) if durations else None,
+            "average_fill_rate": round(sum(fill_rates) / len(fill_rates), 1) if fill_rates else None,
+            "evidence_coverage": {
+                "cost_at_risk": len(exposures),
+                "cost_avoided": len(avoided),
+                "expedite_spend": len(expedite),
+                "fill_rate": len(fill_rates),
+            },
         },
 
         "activity_chart": activity_chart,

@@ -4,6 +4,9 @@
 
 @layer base {
   :root {
+    /* Offline-safe font stacks keep clean-clone builds independent of Google Fonts. */
+    --font-funnel: "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui;
+    --font-geologica: "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui;
     /* 
       LUMINOUS COMMAND CENTER - LIGHT MODE
       "Sophisticated Light" aesthetic with Cornflower-tinted whites

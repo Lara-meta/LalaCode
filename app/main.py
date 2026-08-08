@@ -49,6 +49,7 @@ from .routers import (
     insights_router,
     ai_manager_router,
     notifications_router,
+    integrations_router,
 )
 from .security import get_current_user, verify_access
 
@@ -179,6 +180,9 @@ api_router.include_router(ai_manager_router)
 
 # In-app human approval reminders
 api_router.include_router(notifications_router)
+
+# Live external-system registry and health checks
+api_router.include_router(integrations_router)
 
 # =============================================================================
 # FILE STORAGE ENDPOINTS (kept inline for path matching order)

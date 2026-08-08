@@ -189,7 +189,7 @@ function RecommendationBrief({ item }: { item: WorkbenchItem }) {
           {[
             ['Severity', displayValue(impact.severity)],
             ['Financial exposure', money(impact.exposure_value)],
-            ['Time to impact', `${displayValue(impact.days_until_impact)} days`],
+            ['Time to impact', impactTime(Number.isFinite(Number(impact.days_until_impact)) ? Number(impact.days_until_impact) : null)],
             ['Assessment', displayValue(impact.status)],
           ].map(([label, value]) => <div key={label} className='rounded-lg border bg-white p-3'><p className='text-[11px] font-semibold uppercase tracking-wide text-brand-muted'>{label}</p><p className='mt-1 text-base font-semibold text-brand-navy'>{value}</p></div>)}
         </div></div>

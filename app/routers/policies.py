@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..models.agent_run import AgentRun
 from ..models.disruption import Disruption
+from ..models.operator_result import OperatorResult
 from ..models.policy import Policy
 from ..models.policy_evaluation import PolicyEvaluation
 from ..models.policy_version import PolicyAudit, PolicyVersion
 from ..services.policy_engine import evaluate_policy, policy_snapshot
+from ..services.policy_context import build_policy_context, field_definition, field_registry
 from ..security import get_current_user
 
 
@@ -40,6 +42,7 @@ class PolicyWrite(BaseModel):
     policy_type: str
     description: str | None = Field(default=None, max_length=500)
     threshold_value: float | None = None
+    comparison_value: Any | None = None
     field_name: str | None = Field(default=None, max_length=100)
     operator: str = "gt"
     unit: str | None = Field(default=None, max_length=30)
@@ -61,8 +64,13 @@ class PolicyWrite(BaseModel):
             raise ValueError("Unsupported lifecycle status")
         if self.operator not in OPERATORS:
             raise ValueError("Unsupported operator")
-        if self.operator not in {"not_empty"} and self.threshold_value is None:
+        if self.operator not in {"not_empty"} and self.threshold_value is None and self.comparison_value is None:
             raise ValueError("This operator requires a threshold")
+        definition = field_definition(self.field_name)
+        if not definition:
+            raise ValueError("Choose a supported policy field")
+        if self.operator not in definition["operators"]:
+            raise ValueError("Operator is not supported for this field")
         if self.effective_from and self.effective_until and self.effective_from >= self.effective_until:
             raise ValueError("Expiry must be after the effective date")
         return self
@@ -72,6 +80,7 @@ class PolicyPatch(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     threshold_value: float | None = None
+    comparison_value: Any | None = None
     field_name: str | None = Field(default=None, max_length=100)
     operator: str | None = None
     unit: str | None = Field(default=None, max_length=30)
@@ -118,7 +127,8 @@ def _serialize(policy: Policy) -> dict:
 def _plain_language(policy: Policy) -> str:
     field = (policy.field_name or policy.policy_type).replace("_", " ")
     symbols = {"gt": "greater than", "gte": "at least", "lt": "less than", "lte": "at most", "eq": "equal to", "contains": "contains", "not_empty": "is present"}
-    value = "" if policy.operator == "not_empty" else f" {policy.threshold_value:g}" if policy.threshold_value is not None else ""
+    raw_value = policy.comparison_value if policy.comparison_value is not None else policy.threshold_value
+    value = "" if policy.operator == "not_empty" else f" {raw_value}" if raw_value is not None else ""
     if policy.unit == "USD" and policy.threshold_value is not None:
         value = f" ${policy.threshold_value:,.2f}"
     elif policy.unit == "score_10" and policy.threshold_value is not None:
@@ -188,6 +198,27 @@ def policy_metrics(db: Session = Depends(get_db)):
             "errors": errors, "top_blocker": {"name": top[0], "count": top[1]} if top else None}
 
 
+@router.get("/fields")
+def policy_fields(db: Session = Depends(get_db)):
+    rows = db.query(AgentRun, Disruption).join(Disruption, AgentRun.disruption_id == Disruption.id).all()
+    registry = field_registry()
+    coverage = {item["name"]: 0 for item in registry}
+    for run, disruption in rows:
+        outputs = [item.output or {} for item in db.query(OperatorResult).filter(
+            OperatorResult.agent_run_id == run.id
+        ).all()]
+        context = run.policy_context or build_policy_context(disruption.raw_data or {}, outputs)
+        for name in coverage:
+            if context.get(name) not in (None, "", [], {}):
+                coverage[name] += 1
+    total = len(rows)
+    return {"total_runs": total, "fields": [
+        {**item, "available_runs": coverage[item["name"]],
+         "coverage_percent": round(coverage[item["name"]] / total * 100, 1) if total else 0}
+        for item in registry
+    ]}
+
+
 @router.get("/evaluations")
 def grouped_evaluations(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                         outcome: str | None = None, policy_id: int | None = None,
@@ -216,7 +247,8 @@ def _serialize_evaluation(x: PolicyEvaluation) -> dict:
     return {"id": x.id, "policy_id": x.policy_id, "policy_name": x.policy_name,
             "policy_version": x.policy_version, "outcome": x.outcome or ("pass" if x.passed else "block"),
             "passed": x.passed, "reason": x.reason, "input_field": x.input_field,
-            "input_value": x.input_value, "operator": x.operator, "threshold_value": x.threshold_value,
+            "input_value": x.input_value, "operator": x.operator,
+            "threshold_value": x.comparison_value if x.comparison_value is not None else x.threshold_value,
             "calculation": x.calculation, "final_effect": x.final_effect, "duration_ms": x.duration_ms,
             "evaluated_at": x.evaluated_at.isoformat() if x.evaluated_at else None}
 
@@ -250,7 +282,13 @@ def simulate(request: SimulationRequest, db: Session = Depends(get_db), admin: d
     query = db.query(AgentRun, Disruption).join(Disruption, AgentRun.disruption_id == Disruption.id)
     if request.run_ids: query = query.filter(AgentRun.id.in_(request.run_ids))
     rows = query.order_by(AgentRun.id.desc()).limit(request.limit).all()
-    results = [{"run_id": run.id, **evaluate_policy(proposed, disruption.raw_data or {}, include_lifecycle=False)} for run, disruption in rows]
+    results = []
+    for run, disruption in rows:
+        outputs = [item.output or {} for item in db.query(OperatorResult).filter(
+            OperatorResult.agent_run_id == run.id
+        ).all()]
+        context = run.policy_context or build_policy_context(disruption.raw_data or {}, outputs)
+        results.append({"run_id": run.id, **evaluate_policy(proposed, context, include_lifecycle=False)})
     blocked = sum(1 for x in results if x["outcome"] == "block")
     summary = {"runs_tested": len(results), "would_block": blocked,
                "block_rate": round((blocked / len(results) * 100) if results else 0, 1),
@@ -273,6 +311,9 @@ def update_policy(policy_id: int, request: PolicyPatch, db: Session = Depends(ge
     policy = _get(db, policy_id); previous = _snapshot(policy); old_version = policy.version or 1
     for key, value in request.model_dump(exclude_unset=True, exclude={"actor", "change_reason"}).items(): setattr(policy, key, value)
     if policy.operator not in OPERATORS: raise HTTPException(422, "Unsupported operator")
+    definition = field_definition(policy.field_name)
+    if not definition: raise HTTPException(422, "Choose a supported policy field")
+    if policy.operator not in definition["operators"]: raise HTTPException(422, "Operator is not supported for this field")
     policy.version = old_version + 1; policy.updated_by = request.actor
     policy.status = "draft"; policy.enabled = False
     policy.last_simulated_version = None; policy.last_simulated_at = None; policy.last_simulation_summary = None
@@ -300,6 +341,10 @@ def lifecycle(policy_id: int, status: str, request: LifecycleRequest, db: Sessio
     if status not in STATUSES: raise HTTPException(422, "Unsupported lifecycle status")
     policy = _get(db, policy_id); previous = _snapshot(policy); old_version = policy.version or 1
     if status in {"active", "scheduled"}:
+        definition = field_definition(policy.field_name)
+        if not definition: raise HTTPException(409, "Choose a supported policy field before activation")
+        if policy.operator not in definition["operators"]:
+            raise HTTPException(409, "The selected operator is not valid for this field")
         if policy.last_simulated_version != old_version:
             raise HTTPException(409, "Simulate the current policy version before activation")
         if (policy.last_simulation_summary or {}).get("errors", 0) > 0:

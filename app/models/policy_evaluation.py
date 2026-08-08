@@ -19,6 +19,7 @@ class PolicyEvaluation(Base):
     input_value = Column(String, nullable=True)
     operator = Column(String, nullable=True)
     threshold_value = Column(Float, nullable=True)
+    comparison_value = Column(JSON, nullable=True)
     calculation = Column(String, nullable=True)
     details = Column(JSON, nullable=True)
     final_effect = Column(String, nullable=True)

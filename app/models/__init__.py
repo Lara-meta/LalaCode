@@ -11,6 +11,7 @@ from .policy import Policy
 from .ai_chat_message import AIChatMessage
 from .notification import Notification
 from .policy_version import PolicyVersion, PolicyAudit
+from .integration import Integration
 
 __all__ = [
     "Item",
@@ -28,4 +29,5 @@ __all__ = [
     "Notification",
     "PolicyVersion",
     "PolicyAudit",
+    "Integration",
 ]

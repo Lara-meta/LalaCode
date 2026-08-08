@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..models.policy import Policy
 from ..models.policy_evaluation import PolicyEvaluation
+from .policy_context import field_definition
 
 
 DEFAULT_FIELDS = {
@@ -19,7 +20,7 @@ def policy_snapshot(policy: Policy) -> dict:
     return {
         key: getattr(policy, key, None)
         for key in (
-            "name", "policy_type", "description", "threshold_value", "enabled",
+            "name", "policy_type", "description", "threshold_value", "comparison_value", "enabled",
             "status", "version", "field_name", "operator", "unit", "action",
             "scope", "fail_mode", "priority", "effective_from", "effective_until",
         )
@@ -50,7 +51,8 @@ def _scope_matches(policy: Policy, data: dict) -> bool:
     return True
 
 
-def evaluate_policy(policy: Policy, data: dict, include_lifecycle: bool = True) -> dict:
+def evaluate_policy(policy: Policy, data: dict, include_lifecycle: bool = True,
+                    defer_missing: bool = False) -> dict:
     started = perf_counter()
     now = datetime.now(timezone.utc)
     status = policy.status or ("active" if policy.enabled else "draft")
@@ -75,8 +77,21 @@ def evaluate_policy(policy: Policy, data: dict, include_lifecycle: bool = True) 
     field = policy.field_name or DEFAULT_FIELDS.get(policy.policy_type)
     value = data.get(field) if field else None
     operator = policy.operator or ("not_empty" if policy.policy_type == "contract_clause_block" else "gt")
-    threshold = policy.threshold_value
+    threshold = getattr(policy, "comparison_value", None)
+    if threshold is None:
+        threshold = policy.threshold_value
     if value is None:
+        if defer_missing:
+            return _result(
+                policy, "deferred", value,
+                f"Required field '{field}' will be evaluated after Operator evidence is available",
+                "Deferred to proposed-action checkpoint", started,
+            )
+        definition = field_definition(field)
+        if definition and not definition.get("required", False):
+            return _result(policy, "not_applicable", value,
+                           f"Optional field '{field}' was not produced for this run",
+                           "No effect", started)
         outcome = "error"
         effect = "Blocked (fail closed)" if (policy.fail_mode or "closed") == "closed" else "Allowed (fail open)"
         return _result(policy, outcome, value, f"Required field '{field}' is missing", effect, started)
@@ -118,7 +133,10 @@ def evaluate_policy(policy: Policy, data: dict, include_lifecycle: bool = True) 
 
 def _result(policy: Policy, outcome: str, value: Any, reason: str, effect: str,
             started: float, calculation: str | None = None) -> dict:
-    passed = outcome in {"pass", "not_applicable", "skipped"} or (
+    comparison = getattr(policy, "comparison_value", None)
+    if comparison is None:
+        comparison = policy.threshold_value
+    passed = outcome in {"pass", "not_applicable", "skipped", "deferred"} or (
         outcome == "error" and (policy.fail_mode or "closed") == "open"
     )
     return {
@@ -126,20 +144,26 @@ def _result(policy: Policy, outcome: str, value: Any, reason: str, effect: str,
         "passed": passed, "outcome": outcome, "reason": reason,
         "input_field": policy.field_name or DEFAULT_FIELDS.get(policy.policy_type),
         "input_value": None if value is None else str(value), "operator": policy.operator,
-        "threshold_value": policy.threshold_value, "calculation": calculation,
+        "threshold_value": comparison, "calculation": calculation,
         "final_effect": effect, "duration_ms": max(0, round((perf_counter() - started) * 1000)),
     }
 
 
-def evaluate_policies(db: Session, agent_run_id: int, disruption_data: dict) -> tuple[bool, list[dict]]:
+def evaluate_policies(db: Session, agent_run_id: int, disruption_data: dict,
+                      defer_missing: bool = False) -> tuple[bool, list[dict]]:
     policies = db.query(Policy).filter(Policy.status != "archived").order_by(Policy.priority, Policy.id).all()
-    results = [evaluate_policy(policy, disruption_data) for policy in policies]
+    results = [
+        evaluate_policy(policy, disruption_data, defer_missing=defer_missing)
+        for policy in policies
+    ]
     for policy, result in zip(policies, results):
         db.add(PolicyEvaluation(
             agent_run_id=agent_run_id, policy_id=policy.id, policy_name=policy.name,
             policy_version=result["policy_version"], passed=result["passed"], outcome=result["outcome"],
             reason=result["reason"], input_field=result["input_field"], input_value=result["input_value"],
-            operator=result["operator"], threshold_value=result["threshold_value"],
+            operator=result["operator"],
+            threshold_value=result["threshold_value"] if isinstance(result["threshold_value"], (int, float)) else None,
+            comparison_value=result["threshold_value"],
             calculation=result["calculation"], final_effect=result["final_effect"],
             duration_ms=result["duration_ms"], details={"scope": policy.scope or {}, "unit": policy.unit},
         ))

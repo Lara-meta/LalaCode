@@ -149,7 +149,7 @@ export function ActivityChart({
 
       <CardContent className='pt-0'>
         <div className='mt-4 h-[240px] w-full'>
-          <ResponsiveContainer width='100%' height='100%'>
+          <ResponsiveContainer width='100%' height='100%' minWidth={0}>
             <AreaChart
               data={data}
               margin={{ top: 10, right: 10, left: -20, bottom: 0 }}

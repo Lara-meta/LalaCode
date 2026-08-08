@@ -19,6 +19,7 @@ from ..models.operator_result import OperatorResult
 from ..models.workbench_item import WorkbenchItem
 from ..models.notification import Notification
 from ..services.policy_engine import evaluate_policies
+from ..services.policy_context import build_policy_context
 from ..services.supervity import (
     SupervityError,
     list_workflow_runs,
@@ -92,6 +93,9 @@ class OrchestratorRunRequest(BaseModel):
     notice_supplier_id: str
     notice_type: str
     notice_id: str
+    severity: float | str | None = None
+    expedite_cost: float | None = None
+    x_escalation_clause: str | None = None
 
 
 # ============================================================
@@ -175,19 +179,7 @@ async def run_orchestrator(
     if disruption is None:
         disruption = Disruption(
             external_id=request.notice_id,
-            raw_data={
-                "item_number":
-                    request.item_number,
-
-                "notice_supplier_id":
-                    request.notice_supplier_id,
-
-                "notice_type":
-                    request.notice_type,
-
-                "notice_id":
-                    request.notice_id,
-            },
+            raw_data=request.model_dump(),
         )
 
         db.add(disruption)
@@ -223,9 +215,10 @@ async def run_orchestrator(
     # 3. EVALUATE COMMAND CENTER POLICIES
     # ========================================================
 
-    disruption_data = (
-        disruption.raw_data or {}
-    )
+    disruption_data = build_policy_context(disruption.raw_data or {})
+    agent_run.policy_context = disruption_data
+    agent_run.policy_context_stage = "preflight"
+    db.commit()
 
     try:
         passed, policy_results = (
@@ -233,6 +226,7 @@ async def run_orchestrator(
                 db,
                 agent_run.id,
                 disruption_data,
+                defer_missing=True,
             )
         )
 
@@ -422,6 +416,18 @@ async def run_orchestrator(
 
         if step_status == "waiting":
 
+            governance_context = build_policy_context(
+                disruption_data,
+                review_activities,
+            )
+            policies_passed, checkpoint_results = evaluate_policies(
+                db,
+                agent_run.id,
+                governance_context,
+            )
+            agent_run.policy_context = governance_context
+            agent_run.policy_context_stage = "human_review"
+
             # ----------------------------------------------
             # Update database/dashboard status
             # ----------------------------------------------
@@ -463,6 +469,8 @@ async def run_orchestrator(
                 "status": "waiting",
                 "form_data": content,
                 "recommendation_activities": review_activities,
+                "policy_context": governance_context,
+                "policy_results": checkpoint_results,
             }
             agent_run.result = run_result
 
@@ -479,8 +487,13 @@ async def run_orchestrator(
                 workbench_item = WorkbenchItem(
                     agent_run_id=agent_run.id,
                     reason=(
-                        "Supervity recovery workflow "
-                        "requires human approval."
+                        "Policy-controlled recovery requires human approval: "
+                        + "; ".join(
+                            result["reason"] for result in checkpoint_results
+                            if not result["passed"]
+                        )
+                        if not policies_passed else
+                        "Supervity recovery workflow requires human approval."
                     ),
                     status="pending",
                 )
@@ -592,6 +605,9 @@ async def run_orchestrator(
                 notice_id=
                     request.notice_id,
 
+                expedite_cost=
+                    request.expedite_cost,
+
                 on_event=
                     handle_supervity_event,
             )
@@ -620,6 +636,17 @@ async def run_orchestrator(
     agent_run.status = "completed"
 
     agent_run.result = result
+
+    final_policy_context = build_policy_context(disruption_data, result)
+    final_policies_passed, final_policy_results = evaluate_policies(
+        db, agent_run.id, final_policy_context
+    )
+    result["policy_context"] = final_policy_context
+    result["policy_results"] = final_policy_results
+    agent_run.policy_context = final_policy_context
+    agent_run.policy_context_stage = "post_operator"
+    if not final_policies_passed:
+        agent_run.status = "blocked_by_policy"
 
 
     # Use the final workflow run ID returned by Supervity.

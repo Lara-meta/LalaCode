@@ -722,6 +722,7 @@ async def resume_workbench_item(
             notice_id=str(
                 notice_id
             ),
+            expedite_cost=raw_data.get("expedite_cost"),
         )
 
     except SupervityError as e:

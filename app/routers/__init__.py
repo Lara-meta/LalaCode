@@ -18,6 +18,7 @@ from .workbench import router as workbench_router
 from .insights import router as insights_router
 from .ai_manager import router as ai_manager_router
 from .notifications import router as notifications_router
+from .integrations import router as integrations_router
 
 __all__ = [
     "health_router",
@@ -33,4 +34,5 @@ __all__ = [
     "insights_router",
     "ai_manager_router",
     "notifications_router",
+    "integrations_router",
 ]

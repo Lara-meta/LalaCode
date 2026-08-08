@@ -341,6 +341,7 @@ async def trigger_orchestrator_run(
     notice_supplier_id: str,
     notice_type: str,
     notice_id: str,
+    expedite_cost: float | None = None,
     on_event: Optional[
         SupervityEventCallback
     ] = None,
@@ -398,6 +399,12 @@ async def trigger_orchestrator_run(
             str(notice_id),
         ),
     }
+
+    if expedite_cost is not None:
+        multipart_data["inputs[expedite_cost]"] = (
+            None,
+            str(expedite_cost),
+        )
 
 
     # ========================================================

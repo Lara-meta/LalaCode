@@ -10,6 +10,7 @@ class Policy(Base):
     name = Column(String, index=True)
     policy_type = Column(String)  # "severity_threshold" | "expedite_spend_limit" | "contract_clause_block"
     threshold_value = Column(Float, nullable=True)  # used by severity/spend rules
+    comparison_value = Column(JSON, nullable=True)  # string, boolean, or structured comparison value
     enabled = Column(Boolean, default=True)
     description = Column(String, nullable=True)
     status = Column(String, default="active", index=True)

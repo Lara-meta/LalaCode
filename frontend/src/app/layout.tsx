@@ -8,22 +8,7 @@ import { Header } from '@/components/layout/Header'
 import { Sidebar, SidebarProvider, useSidebar } from '@/components/layout/Sidebar'
 import { MobileSidebar } from '@/components/layout/MobileSidebar'
 import { VisualPattern } from '@/components/brand'
-import { Funnel_Display, Geologica } from 'next/font/google'
 import { cn } from '@/lib/utils'
-
-// Configure Funnel Display (Primary / Headings)
-const funnel = Funnel_Display({
-  subsets: ['latin'],
-  variable: '--font-funnel',
-  display: 'swap',
-})
-
-// Configure Geologica (Secondary / Body)
-const geologica = Geologica({
-  subsets: ['latin'],
-  variable: '--font-geologica',
-  display: 'swap',
-})
 
 // Routes that should NOT show the main app shell (sidebar, header)
 const AUTH_ROUTES = ['/auth/signin', '/auth/register', '/auth/error']
@@ -115,8 +100,6 @@ export default function RootLayout({
         className={cn(
           'min-h-screen font-sans antialiased',
           'bg-background text-foreground',
-          funnel.variable,
-          geologica.variable
         )}
       >
         <Providers>

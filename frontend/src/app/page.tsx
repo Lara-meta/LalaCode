@@ -104,6 +104,15 @@ type DashboardResponse = {
   activity_chart: ActivityData[]
   recent_runs: RecentRun[]
   recent_operators: OperatorActivity[]
+  procurement_outcomes: {
+    resolved_disruptions: number
+    cost_at_risk: number | null
+    cost_avoided: number | null
+    expedite_spend: number | null
+    average_recovery_minutes: number | null
+    average_fill_rate: number | null
+    evidence_coverage: Record<string, number>
+  }
 
   system_health: {
     backend: HealthItem
@@ -286,6 +295,7 @@ function RecoveryOutcomesChart({
           <ResponsiveContainer
             width='100%'
             height='100%'
+            minWidth={0}
           >
             <BarChart
               data={data}
@@ -519,6 +529,19 @@ export default function HomePage() {
       </div>
 
       <ActionRequired data={dashboard.action_required} />
+
+      <section>
+        <div className='mb-3'><h2 className='text-xl font-semibold text-brand-navy'>Recovery performance</h2><p className='mt-1 text-sm text-muted-foreground'>Verified business outcomes from resolved disruptions. Metrics appear only when supporting evidence is available.</p></div>
+        <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
+          {[
+            ['Cost at risk', dashboard.procurement_outcomes.cost_at_risk === null ? null : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(dashboard.procurement_outcomes.cost_at_risk)],
+            ['Cost avoided', dashboard.procurement_outcomes.cost_avoided === null ? null : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(dashboard.procurement_outcomes.cost_avoided)],
+            ['Avg. recovery time', dashboard.procurement_outcomes.average_recovery_minutes === null ? null : `${Math.round(dashboard.procurement_outcomes.average_recovery_minutes)} min`],
+            ['Expedite spend', dashboard.procurement_outcomes.expedite_spend === null ? null : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(dashboard.procurement_outcomes.expedite_spend)],
+            ['Resolved disruptions', String(dashboard.procurement_outcomes.resolved_disruptions)],
+          ].filter(([, value]) => value !== null).map(([label, value]) => <Card key={label}><CardContent className='p-4'><p className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>{label}</p><p className='mt-2 text-xl font-bold text-brand-navy'>{value}</p></CardContent></Card>)}
+        </div>
+      </section>
 
       {/* ====================================================== */}
       {/* SUMMARY CARDS */}
