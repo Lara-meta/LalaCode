@@ -39,6 +39,19 @@ ALIASES = {
     "recoveryStrategy": "recovery_strategy", "recovery_strategy": "recovery_strategy",
 }
 
+SEVERITY_SCORES = {
+    "low": 2,
+    "medium": 5,
+    "high": 8,
+    "critical": 10,
+}
+
+
+def _normalize_value(field: str, value: Any) -> Any:
+    if field == "severity" and isinstance(value, str):
+        return SEVERITY_SCORES.get(value.strip().lower(), value)
+    return value
+
 
 def _walk(value: Any):
     if isinstance(value, dict):
@@ -72,7 +85,7 @@ def build_policy_context(raw_data: dict | None, operator_outputs: Any = None) ->
         for key, value in _walk(source):
             normalized = ALIASES.get(key, key if key in POLICY_FIELDS else None)
             if normalized and value not in (None, "", [], {}) and context.get(normalized) in (None, "", [], {}):
-                context[normalized] = value
+                context[normalized] = _normalize_value(normalized, value)
     return {key: value for key, value in context.items() if value not in (None, "", [], {})}
 
 

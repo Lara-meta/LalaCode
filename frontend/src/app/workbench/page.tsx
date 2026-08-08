@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import toast from 'react-hot-toast'
 
@@ -216,7 +216,6 @@ function RecommendationBrief({ item }: { item: WorkbenchItem }) {
 }
 
 export default function WorkbenchPage() {
-  const recoveryActionsRef = useRef<HTMLDivElement>(null)
   const [items, setItems] = useState<WorkbenchItem[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(() => {
     if (typeof window === 'undefined') return null
@@ -500,56 +499,16 @@ export default function WorkbenchPage() {
                   ))}
                 </div>
 
-                {selected.status === 'pending' && (
-                  <div className='sticky top-24 z-20 rounded-xl border border-brand-cornflower/30 bg-white/95 p-3 shadow-lg shadow-brand-navy/10 backdrop-blur-md'>
-                    <div className='flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between'>
-                      <div className='min-w-0'>
-                        <p className='text-xs font-semibold uppercase tracking-wide text-brand-muted'>Decision controls</p>
-                        <p className='truncate text-sm font-semibold text-brand-navy'>
-                          Recommendation: {selectedRecommendation?.recommended_strategy || 'No recommendation available'}
-                        </p>
-                      </div>
-                      <div className='flex flex-wrap gap-2'>
-                        <Button
-                          size='sm'
-                          className='bg-emerald-600 hover:bg-emerald-700'
-                          onClick={() => decide('approve', selectedRecommendation?.recommended_strategy)}
-                          disabled={submitting !== null || !selectedRecommendation?.recommended_strategy}
-                        >
-                          <Icons.check className='mr-1.5 h-4 w-4' />
-                          {submitting === 'approve' ? 'Approving...' : 'Approve recommendation'}
-                        </Button>
-                        <Button size='sm' variant='outline' onClick={() => recoveryActionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })} disabled={submitting !== null || recoveryOptions.length === 0}>
-                          <Icons.listFilter className='mr-1.5 h-4 w-4' /> Choose alternative
-                        </Button>
-                        <Button size='sm' variant='outline' className='border-purple-300 text-purple-700 hover:bg-purple-50' onClick={() => decide('hold')} disabled={submitting !== null}>
-                          <Icons.clock className='mr-1.5 h-4 w-4' /> {submitting === 'hold' ? 'Holding...' : 'Hold'}
-                        </Button>
-                        <Button size='sm' variant='outline' className='border-red-300 text-red-700 hover:bg-red-50' onClick={() => decide('reject')} disabled={submitting !== null}>
-                          <Icons.close className='mr-1.5 h-4 w-4' /> {submitting === 'reject' ? 'Rejecting...' : 'Reject'}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 <RecommendationBrief item={selected} />
 
                 {selected.status === 'pending' && (
                   <>
-                    {selected.agent_run_status === 'waiting_for_human' && (
-                      <div className='rounded-xl border border-purple-200 bg-purple-50 p-4'>
-                        <p className='font-semibold text-purple-900'>Human approval required</p>
-                        <p className='mt-1 text-sm text-purple-800'>This orchestrator run is paused. The Workbench decision below controls whether it is rejected or allowed to continue.</p>
-                      </div>
-                    )}
-
                     <div>
                       <Label htmlFor='decision-notes'>Reviewer notes <span className='font-normal text-muted-foreground'>(optional)</span></Label>
                       <textarea id='decision-notes' value={notes} onChange={(event) => setNotes(event.target.value)} placeholder='Explain the decision for the audit trail...' className='mt-2 min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-cornflower' />
                     </div>
 
-                    <div ref={recoveryActionsRef} className='scroll-mt-40 space-y-3 border-t pt-5'>
+                    <div className='space-y-3 border-t pt-5'>
                       <div><p className='font-semibold text-brand-navy'>Choose a recovery action</p><p className='mt-1 text-sm text-muted-foreground'>Selecting an option records that strategy and continues the orchestrator.</p></div>
                       <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
                         {recoveryOptions.map((option) => {

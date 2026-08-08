@@ -58,3 +58,20 @@ def test_explicit_zero_expedite_cost_is_preserved():
         {"notice_id": "5001", "expedite_cost": 0}
     )
     assert context["expedite_cost"] == 0
+
+
+def test_text_severity_is_normalized_for_numeric_policy_comparison():
+    evidence = [{"outputs": {"output": '{"severity": "high"}'}}]
+    context = build_policy_context({"notice_id": "5001"}, evidence)
+    result = evaluate_policy(
+        policy(
+            name="Severity guard",
+            policy_type="severity_threshold",
+            field_name="severity",
+            threshold_value=7,
+            unit="score_10",
+        ),
+        context,
+    )
+    assert context["severity"] == 8
+    assert result["outcome"] == "block"
