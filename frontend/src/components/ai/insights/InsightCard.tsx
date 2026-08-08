@@ -21,12 +21,14 @@ export interface Insight {
   is_dismissed?: boolean
   is_actioned?: boolean
   is_demo?: boolean
+  evidence_count?: number
 }
 
 interface InsightCardProps {
   insight: Insight
   onAction?: (insight: Insight) => void
   onDismiss?: (id: string) => void
+  onEvidence?: (insight: Insight) => void
 }
 
 /**
@@ -107,10 +109,20 @@ const typeConfig: Record<InsightType, { label: string; icon: typeof Icons.activi
   alert: { label: 'Alert', icon: Icons.bell },
 }
 
-export function InsightCard({ insight, onAction, onDismiss }: InsightCardProps) {
+export function InsightCard({ insight, onAction, onDismiss, onEvidence }: InsightCardProps) {
   const severity = getSeverityConfig(insight.severity)
   const type = typeConfig[insight.type] || typeConfig.recommendation
   const SeverityIcon = severity.icon
+  const formatDataValue = (key: string, value: unknown) => {
+    if (typeof value === 'number' && key.includes('rate')) return `${(value * 100).toFixed(1)}%`
+    if (typeof value === 'number' && key.includes('seconds')) {
+      const minutes = Math.floor(value / 60)
+      const seconds = Math.round(value % 60)
+      return `${minutes}m ${seconds}s`
+    }
+    if (Array.isArray(value)) return `${value.length} affected run${value.length === 1 ? '' : 's'}`
+    return String(value)
+  }
 
   return (
     <div className={cn(
@@ -184,7 +196,7 @@ export function InsightCard({ insight, onAction, onDismiss }: InsightCardProps) 
                   )}
                 >
                   <span className="text-muted-foreground">{key.replace(/_/g, ' ')}:</span>
-                  <span className="font-semibold">{String(value)}</span>
+                  <span className="font-semibold">{formatDataValue(key, value)}</span>
                 </span>
               ))}
             </div>
@@ -192,15 +204,19 @@ export function InsightCard({ insight, onAction, onDismiss }: InsightCardProps) 
 
           {/* Suggested Action */}
           {insight.suggested_action && (
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              {onEvidence && (
+                <Button variant="outline" size="sm" onClick={() => onEvidence(insight)}>
+                  <Icons.eye className="mr-1.5 h-3.5 w-3.5" /> View supporting records
+                </Button>
+              )}
               <Button
                 variant="default"
                 size="sm"
                 onClick={() => onAction?.(insight)}
               >
                 <Icons.zap className="mr-1.5 h-3.5 w-3.5" strokeWidth={1.5} />
-                {insight.suggested_action.slice(0, 30)}
-                {insight.suggested_action.length > 30 ? '...' : ''}
+                {insight.suggested_action}
               </Button>
             </div>
           )}
