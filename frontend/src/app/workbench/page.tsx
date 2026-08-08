@@ -351,6 +351,20 @@ export default function WorkbenchPage() {
     }
   }
 
+  async function continueApprovedWorkflow() {
+    if (!selected) return
+    try {
+      setSubmitting('resume')
+      await apiClient.post(`/api/workbench/${selected.id}/resume`)
+      toast.success('Approved workflow continued in Supervity.')
+      await loadItems()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Workflow could not be continued.')
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
   function selectFilter(value: StatusFilter) {
     setFilter(value)
     setSelectedId(null)
@@ -536,6 +550,17 @@ export default function WorkbenchPage() {
                       <Button onClick={() => decide('approve')} disabled={submitting !== null}><Icons.arrowRight className='mr-2 h-4 w-4' />{submitting ? 'Processing...' : 'Continue workflow'}</Button>
                       <Button variant='outline' className='border-red-300 text-red-700 hover:bg-red-50' onClick={() => decide('reject')} disabled={submitting !== null}><Icons.close className='mr-2 h-4 w-4' />Reject and stop</Button>
                     </div>
+                  </div>
+                )}
+
+                {(selected.status === 'approved' || selected.status === 'modified') && ['waiting_for_human', 'held_by_human', 'blocked_by_policy'].includes(selected.agent_run_status) && (
+                  <div className='rounded-xl border border-amber-200 bg-amber-50 p-4'>
+                    <p className='font-semibold text-amber-900'>Approval saved; workflow continuation pending</p>
+                    <p className='mt-1 text-sm text-amber-800'>{selected.agent_run_status === 'blocked_by_policy' ? 'The human override is recorded. Continue with a recovery run that bypasses this policy block for the approved case.' : 'The decision is already recorded. Continue the existing paused Supervity workflow without approving it again.'}</p>
+                    <Button className='mt-3 bg-emerald-600 hover:bg-emerald-700' onClick={continueApprovedWorkflow} disabled={submitting !== null}>
+                      <Icons.check className='mr-2 h-4 w-4' />
+                      {submitting === 'resume' ? 'Continuing...' : 'Continue approved workflow'}
+                    </Button>
                   </div>
                 )}
 

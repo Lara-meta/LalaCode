@@ -313,6 +313,17 @@ def make_workbench_decision(
             detail="Workbench item not found",
         )
 
+    # A decision can be persisted even if the subsequent Supervity resume
+    # request is interrupted. Treat a repeated approval as a safe retry.
+    if item.status in {"approved", "modified"}:
+        return {
+            "status": item.status,
+            "workbench_item_id": item.id,
+            "original_agent_run_id": item.agent_run_id,
+            "resume_required": True,
+            "retry": True,
+        }
+
     # Pending cases may be decided; held cases may later continue or reject.
     if item.status not in {"pending", "held"}:
         raise HTTPException(
@@ -341,12 +352,16 @@ def make_workbench_decision(
             detail="Original agent run not found",
         )
 
-    if original_run.status not in {"waiting_for_human", "held_by_human"}:
+    if original_run.status not in {
+        "waiting_for_human",
+        "held_by_human",
+        "blocked_by_policy",
+    }:
         raise HTTPException(
             status_code=409,
             detail=(
                 "Workbench decisions are only allowed for "
-                "runs waiting for or held by a human"
+                "runs waiting for a human or blocked by policy"
             ),
         )
 
@@ -595,11 +610,15 @@ async def resume_workbench_item(
             detail="Original agent run not found",
         )
 
-    if original_run.status not in {"waiting_for_human", "held_by_human"}:
+    if original_run.status not in {
+        "waiting_for_human",
+        "held_by_human",
+        "blocked_by_policy",
+    }:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Only runs waiting for or held by a human "
+                "Only runs waiting for a human or blocked by policy "
                 "can be continued"
             ),
         )
